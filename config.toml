@@ -1,10 +1,10 @@
 
 [theme]
-base = "dark"
-primaryColor = "#B6A1F5"
-backgroundColor = "#242232"
-secondaryBackgroundColor = "#302D40"
-textColor = "#F5F2FC"
+base = "light"
+primaryColor = "#8065B8"
+backgroundColor = "#F0EDF7"
+secondaryBackgroundColor = "#E8E3F1"
+textColor = "#29243A"
 font = "sans serif"
 
 [server]
