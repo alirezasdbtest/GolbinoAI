@@ -1,330 +1,1082 @@
+
 import os
 import re
 import time
+import html
 import threading
+from pathlib import Path
+from urllib.parse import urljoin, urlsplit, unquote, quote
+
 import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin, unquote
 import streamlit as st
+from bs4 import BeautifulSoup
+
 
 # ============================================================
-# تنظیمات سراسری
+# تنظیمات اصلی
 # ============================================================
-WORKER_BASE = "https://broad-dew-8b34.alirezasaidi13802001.workers.dev/"
+
+st.set_page_config(
+    page_title="Raabin WBC Downloader",
+    page_icon="🧬",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
 PAGE_URL = (
     "https://dl.raabindata.com/"
     "Index%20of%20WBC%20Data/"
     "Index%20of%20WBC%20First_microscope/"
 )
+
+WORKER_BASE = (
+    "https://broad-dew-8b34.alirezasaidi13802001.workers.dev/"
+)
+
+DOWNLOAD_DIR = Path("downloads")
+PARTIAL_DIR = DOWNLOAD_DIR / ".partial"
+
+DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+PARTIAL_DIR.mkdir(parents=True, exist_ok=True)
+
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
 }
-DOWNLOAD_DIR = "downloads"
-LOG_FILE_PATH = "download_log.txt"
 
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+CHUNK_SIZE = 256 * 1024
+MAX_RETRIES = 4
+TIMEOUT = (30, 180)
 
 
-def write_log(message: str) -> None:
-    """نوشتن لاگ در فایل و در session_state برای نمایش در UI."""
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+# ============================================================
+# استایل رابط کاربری
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+    @import url(
+        'https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&display=swap'
+    );
+
+    html, body, [class*="css"] {
+        font-family: 'Vazirmatn', sans-serif;
+    }
+
+    .stApp {
+        background:
+            radial-gradient(
+                circle at 10% 5%,
+                rgba(151, 130, 210, 0.13),
+                transparent 35%
+            ),
+            linear-gradient(135deg, #f5f3fa, #eeedf5);
+        color: #29243a;
+    }
+
+    [data-testid="stSidebar"] {
+        background: #e9e5f1;
+        border-right: 1px solid rgba(100, 80, 140, 0.12);
+    }
+
+    [data-testid="stHeader"] {
+        background: transparent;
+    }
+
+    h1, h2, h3, p, label, span {
+        color: #29243a;
+    }
+
+    .hero {
+        padding: 30px;
+        border-radius: 24px;
+        background: rgba(255, 255, 255, 0.65);
+        border: 1px solid rgba(255, 255, 255, 0.85);
+        box-shadow: 0 12px 35px rgba(45, 35, 75, 0.08);
+        backdrop-filter: blur(18px);
+        margin-bottom: 25px;
+    }
+
+    .hero-title {
+        font-size: 29px;
+        font-weight: 800;
+        color: #302747;
+        margin-bottom: 8px;
+    }
+
+    .hero-subtitle {
+        font-size: 15px;
+        color: #625b70;
+        line-height: 2;
+    }
+
+    .info-card {
+        padding: 20px;
+        border-radius: 18px;
+        background: rgba(255,255,255,0.72);
+        border: 1px solid rgba(255,255,255,0.9);
+        box-shadow: 0 6px 20px rgba(45,35,75,0.05);
+        min-height: 115px;
+    }
+
+    .info-number {
+        font-size: 25px;
+        font-weight: 800;
+        color: #8065b8;
+    }
+
+    .info-label {
+        font-size: 13px;
+        color: #625b70;
+    }
+
+    .section-title {
+        font-size: 20px;
+        font-weight: 700;
+        color: #302747;
+        margin: 15px 0;
+    }
+
+    .small-note {
+        color: #70687d;
+        font-size: 13px;
+        line-height: 1.9;
+    }
+
+    div.stButton > button {
+        border-radius: 12px;
+        border: 1px solid rgba(128,101,184,0.25);
+        font-family: 'Vazirmatn', sans-serif;
+        font-weight: 600;
+        min-height: 43px;
+    }
+
+    div.stButton > button[kind="primary"] {
+        background: #8065b8;
+        color: white;
+        border: none;
+    }
+
+    div.stButton > button[kind="primary"]:hover {
+        background: #6e54a7;
+        color: white;
+    }
+
+    [data-testid="stProgressBar"] > div > div {
+        background-color: #8065b8;
+    }
+
+    code {
+        direction: ltr;
+        text-align: left;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# وضعیت برنامه
+# ============================================================
+
+DEFAULT_STATE = {
+    "zip_links": None,
+    "download_logs": [],
+    "download_status": "idle",
+    "download_failed": [],
+    "download_success": [],
+    "download_current_file": "",
+    "download_current_index": 0,
+    "download_total": 0,
+    "download_progress": 0.0,
+    "download_started": False,
+}
+
+for key, value in DEFAULT_STATE.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+
+# ============================================================
+# توابع عمومی
+# ============================================================
+
+def add_log(message: str):
+    """ثبت پیام در گزارش برنامه."""
+
+    timestamp = time.strftime("%H:%M:%S")
     entry = f"[{timestamp}] {message}"
-    try:
-        with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
-            f.write(entry + "\n")
-    except Exception:
-        pass
-    logs = st.session_state.setdefault("download_logs", [])
+
+    logs = st.session_state.download_logs
     logs.append(entry)
-    if len(logs) > 200:
-        st.session_state.download_logs = logs[-200:]
+
+    if len(logs) > 300:
+        st.session_state.download_logs = logs[-300:]
 
 
-def _natural_key(name: str):
-    """مرتب‌سازی طبیعی: file_2 قبل از file_10."""
-    return [int(t) if t.isdigit() else t.lower()
-            for t in re.split(r"(\d+)", name)]
+def natural_key(value: str):
+    """مرتب‌سازی طبیعی نام فایل‌ها."""
+
+    return [
+        int(part) if part.isdigit() else part.lower()
+        for part in re.split(r"(\d+)", value)
+    ]
 
 
-def get_zip_links(page_url: str):
-    """دریافت لیست لینک‌های ZIP؛ در صورت خطا از Worker استفاده می‌کند."""
-    try:
-        r = requests.get(page_url, headers=HEADERS, timeout=30)
-        r.raise_for_status()
-    except Exception:
+def safe_filename(filename: str) -> str:
+    """جلوگیری از نام فایل نامعتبر."""
+
+    filename = unquote(filename)
+    filename = os.path.basename(filename)
+    filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename)
+
+    return filename.strip(" .")
+
+
+def get_worker_url(original_url: str) -> str:
+    """ساخت آدرس Worker از آدرس اصلی."""
+
+    parsed = urlsplit(original_url)
+
+    relative_path = parsed.path.lstrip("/")
+
+    if parsed.query:
+        relative_path += "?" + parsed.query
+
+    return WORKER_BASE.rstrip("/") + "/" + relative_path
+
+
+def get_url_candidates(original_url: str):
+    """آدرس Worker و آدرس اصلی را به‌عنوان مسیرهای جایگزین برمی‌گرداند."""
+
+    worker_url = get_worker_url(original_url)
+
+    if worker_url == original_url:
+        return [original_url]
+
+    return [worker_url, original_url]
+
+
+# ============================================================
+# دریافت فهرست فایل‌ها
+# ============================================================
+
+def fetch_directory(url: str):
+    """دریافت محتوای صفحه فهرست فایل‌ها."""
+
+    errors = []
+
+    for candidate in get_url_candidates(url):
+
         try:
-            relative = page_url.split("dl.raabindata.com/", 1)[1]
-            proxied = f"{WORKER_BASE.rstrip('/')}/{relative}"
-            r = requests.get(proxied, headers=HEADERS, timeout=60)
-            r.raise_for_status()
-        except Exception:
-            return []
+            response = requests.get(
+                candidate,
+                headers=HEADERS,
+                timeout=TIMEOUT,
+            )
 
-    soup = BeautifulSoup(r.text, "html.parser")
+            response.raise_for_status()
+
+            if not response.text.strip():
+                raise ValueError("پاسخ سرور خالی است.")
+
+            return response.text
+
+        except Exception as exc:
+            errors.append(str(exc))
+
+    raise RuntimeError(
+        "دریافت فهرست فایل‌ها ناموفق بود: "
+        + " | ".join(errors)
+    )
+
+
+def get_zip_links():
+    """استخراج لینک فایل‌های ZIP از صفحه Raabin."""
+
+    page_html = fetch_directory(PAGE_URL)
+
+    soup = BeautifulSoup(page_html, "html.parser")
+
     links = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if re.search(r"\.zip$", href, re.IGNORECASE):
-            links.append(urljoin(page_url, href))
 
-    links = sorted(set(links),
-                   key=lambda u: _natural_key(unquote(os.path.basename(u))))
+    for anchor in soup.find_all("a", href=True):
+
+        href = anchor.get("href", "").strip()
+
+        if not href:
+            continue
+
+        if not re.search(r"\.zip(?:$|\?)", href, re.IGNORECASE):
+            continue
+
+        full_url = urljoin(PAGE_URL, href)
+
+        links.append(full_url)
+
+    links = sorted(
+        set(links),
+        key=lambda url: natural_key(
+            safe_filename(urlsplit(url).path.split("/")[-1])
+        ),
+    )
+
     return links
 
 
+# ============================================================
+# پردازش بازه انتخابی
+# ============================================================
+
 def parse_range(raw: str, total: int):
     """
-    تبدیل ورودی کاربر به لیست شماره‌ها.
-    پشتیبانی: "1-20"، "20-30"، "5"، "5-"، "all"
+    نمونه ورودی:
+    all
+    1-20
+    20-30
+    5
+    5-
+    1,3,5
+    1-5,8,10-12
     """
+
     raw = raw.strip().lower()
-    if raw in ("all", "*", ""):
+
+    if raw in ("all", "*"):
         return list(range(1, total + 1))
-    if "-" in raw:
-        left, _, right = raw.partition("-")
-        try:
-            a = int(left.strip())
-            b = int(right.strip()) if right.strip() else total
-        except ValueError:
-            return None
-    else:
-        try:
-            a = b = int(raw)
-        except ValueError:
-            return None
-    if not (1 <= a <= b <= total):
+
+    if not raw:
         return None
-    return list(range(a, b + 1))
+
+    selected = set()
+
+    try:
+
+        parts = raw.split(",")
+
+        for part in parts:
+
+            part = part.strip()
+
+            if not part:
+                return None
+
+            if "-" in part:
+
+                left, right = part.split("-", 1)
+
+                start = int(left.strip())
+                end = int(right.strip()) if right.strip() else total
+
+            else:
+
+                start = int(part)
+                end = start
+
+            if start < 1 or end < start or end > total:
+                return None
+
+            selected.update(range(start, end + 1))
+
+        return sorted(selected)
+
+    except (ValueError, TypeError):
+        return None
+
+
+# ============================================================
+# دانلود فایل
+# ============================================================
+
+def get_total_size(response, downloaded_before: int):
+    """تشخیص حجم واقعی فایل از هدرهای پاسخ."""
+
+    content_range = response.headers.get("Content-Range", "")
+
+    match = re.search(r"/(\d+)$", content_range)
+
+    if match:
+        return int(match.group(1))
+
+    content_length = response.headers.get("Content-Length")
+
+    if content_length:
+
+        try:
+            length = int(content_length)
+
+            if response.status_code == 206:
+                return downloaded_before + length
+
+            return length
+
+        except ValueError:
+            pass
+
+    return 0
 
 
 def download_single_file(
     original_url: str,
-    dest_folder: str,
-    worker_base: str,
-    max_retries: int = 5,
+    overwrite: bool,
     progress_callback=None,
-) -> bool:
+):
     """
-    دانلود یک فایل با قابلیت Resume.
-    progress_callback(percent: float, filename: str) برای به‌روزرسانی UI.
+    دانلود با قابلیت Resume.
+    فایل ابتدا با پسوند part ذخیره می‌شود.
+    پس از اتمام و بررسی حجم، به ZIP تبدیل می‌شود.
     """
-    filename = unquote(os.path.basename(original_url))
-    filepath = os.path.join(dest_folder, filename)
 
-    if "dl.raabindata.com/" in original_url:
-        relative = original_url.split("dl.raabindata.com/", 1)[1]
-    else:
-        relative = original_url
-    proxied_url = f"{worker_base.rstrip('/')}/{relative}"
-
-    # دریافت حجم نهایی
-    total_size = 0
-    for attempt in range(1, max_retries + 1):
-        try:
-            head = requests.head(proxied_url, headers=HEADERS, timeout=30)
-            total_size = int(head.headers.get("content-length", 0))
-            break
-        except Exception:
-            if attempt == max_retries:
-                write_log(f"Khata dar size-e {filename}")
-            time.sleep(2 * attempt)
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            initial_pos = 0
-            if os.path.exists(filepath):
-                initial_pos = os.path.getsize(filepath)
-                if total_size > 0 and initial_pos >= total_size:
-                    write_log(f"[Skip] {filename} ghablan kamel shode")
-                    if progress_callback:
-                        progress_callback(100.0, filename)
-                    return True
-                elif total_size > 0 and initial_pos < total_size:
-                    write_log(f"[Resume] {filename} az "
-                              f"{initial_pos/1024/1024:.1f} MB")
-
-            download_headers = HEADERS.copy()
-            if initial_pos > 0:
-                download_headers["Range"] = f"bytes={initial_pos}-"
-
-            with requests.get(
-                proxied_url,
-                headers=download_headers,
-                stream=True,
-                timeout=(30, 180),
-            ) as r:
-                if initial_pos > 0 and r.status_code == 206:
-                    mode = "ab"
-                else:
-                    mode = "wb"
-                    initial_pos = 0
-
-                r.raise_for_status()
-                downloaded = initial_pos
-                with open(filepath, mode) as f:
-                    for chunk in r.iter_content(chunk_size=128 * 1024):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            if progress_callback and total_size > 0:
-                                pct = min(100.0, downloaded / total_size * 100)
-                                progress_callback(pct, filename)
-
-            if total_size > 0 and os.path.getsize(filepath) < total_size:
-                raise ValueError("Hajm-e download kamtar az hajm nahaee ast!")
-
-            write_log(f"[Success] {filename} kamel shod")
-            if progress_callback:
-                progress_callback(100.0, filename)
-            return True
-
-        except Exception as e:
-            write_log(f"Khata dar talash-e {attempt} baraye {filename}: {e}")
-            if attempt < max_retries:
-                time.sleep(5 * attempt)
-            else:
-                write_log(f"[Failed] {filename} pas az {max_retries} talash")
-                return False
-
-
-# ============================================================
-# بخش Streamlit
-# ============================================================
-def _run_download_thread(selected_zips, total_files, start_num):
-    """
-    دانلود در thread جداگانه اجرا می‌شود تا UI بلاک نشود.
-    وضعیت در st.session_state ذخیره می‌شود.
-    """
-    state = st.session_state
-    state.download_status = "running"
-    state.download_current_index = 0
-    state.download_total = len(selected_zips)
-    state.download_current_file = ""
-    state.download_progress = 0.0
-    state.download_finished = False
-    state.download_failed = []
-
-    def progress_cb(pct, fname):
-        state.download_progress = pct
-        state.download_current_file = fname
-
-    for offset, url in enumerate(selected_zips):
-        idx = start_num + offset
-        fname = unquote(os.path.basename(url))
-        state.download_current_index = offset + 1
-        state.download_current_file = fname
-        state.download_progress = 0.0
-        ok = download_single_file(
-            url, DOWNLOAD_DIR, WORKER_BASE, progress_callback=progress_cb
-        )
-        if not ok:
-            state.download_failed.append(fname)
-
-    state.download_status = "finished"
-    state.download_finished = True
-    write_log("Amaliat-e download be payan rasid.")
-
-
-def render_download_section():
-    """
-    این تابع را در app.py فراخوانی کنید تا بخش دانلود نمایش داده شود.
-    """
-    st.subheader("Download ZIP files from Raabin Data")
-
-    state = st.session_state
-
-    # ---------- 1) دریافت لیست ----------
-    if "zip_links" not in state:
-        state.zip_links = None
-
-    if st.button("Get file list / Update list"):
-        with st.spinner("Fetching file list..."):
-            links = get_zip_links(PAGE_URL)
-        if not links:
-            st.error("No ZIP file found or could not reach the server.")
-            return
-        state.zip_links = links
-        st.success(f"{len(links)} ZIP file found.")
-
-    if not state.zip_links:
-        st.info("Click the button above to load the file list.")
-        return
-
-    total = len(state.zip_links)
-    st.write(f"**Total files:** {total}")
-
-    # نمایش نمونه‌ای از لیست (نه همه، برای جلوگیری از شلوغی)
-    with st.expander("Show first 10 file names"):
-        for i, u in enumerate(state.zip_links[:10], 1):
-            st.text(f"[{i}] {unquote(os.path.basename(u))}")
-        if total > 10:
-            st.caption(f"... and {total - 10} more")
-
-    # ---------- 2) پرسش بازه ----------
-    range_input = st.text_input(
-        "Which files? (e.g. `1-20` or `20-30` or `all`)",
-        value="1-20",
-        key="range_input",
+    filename = safe_filename(
+        urlsplit(original_url).path.split("/")[-1]
     )
-    indices = parse_range(range_input, total)
-    if not indices:
-        st.warning(f"Invalid range. Must be between 1 and {total}.")
+
+    if not filename:
+        raise ValueError("نام فایل معتبر نیست.")
+
+    final_path = DOWNLOAD_DIR / filename
+    partial_path = PARTIAL_DIR / (filename + ".part")
+
+    # اگر فایل کامل از قبل موجود است
+    if final_path.exists() and not overwrite:
+
+        add_log(f"رد شد؛ فایل از قبل وجود دارد: {filename}")
+
+        if progress_callback:
+            progress_callback(100, filename)
+
+        return "skipped"
+
+    errors = []
+
+    for candidate in get_url_candidates(original_url):
+
+        for attempt in range(1, MAX_RETRIES + 1):
+
+            try:
+
+                downloaded_before = (
+                    partial_path.stat().st_size
+                    if partial_path.exists()
+                    else 0
+                )
+
+                headers = HEADERS.copy()
+
+                if downloaded_before > 0:
+                    headers["Range"] = f"bytes={downloaded_before}-"
+
+                with requests.get(
+                    candidate,
+                    headers=headers,
+                    stream=True,
+                    timeout=TIMEOUT,
+                    allow_redirects=True,
+                ) as response:
+
+                    if response.status_code not in (200, 206):
+                        response.raise_for_status()
+
+                    # اگر سرور Range را پشتیبانی نکند، از ابتدا شروع می‌کنیم.
+                    if response.status_code == 206:
+
+                        content_range = response.headers.get(
+                            "Content-Range", ""
+                        )
+
+                        match = re.match(
+                            r"bytes\s+(\d+)-(\d+)/(\d+|\*)",
+                            content_range,
+                            re.IGNORECASE,
+                        )
+
+                        if not match:
+                            raise ValueError(
+                                "پاسخ Range سرور معتبر نیست."
+                            )
+
+                        actual_start = int(match.group(1))
+
+                        if actual_start != downloaded_before:
+                            raise ValueError(
+                                "موقعیت Resume با پاسخ سرور مطابقت ندارد."
+                            )
+
+                        mode = "ab"
+
+                    else:
+
+                        downloaded_before = 0
+                        mode = "wb"
+
+                    total_size = get_total_size(
+                        response,
+                        downloaded_before,
+                    )
+
+                    downloaded = downloaded_before
+
+                    if progress_callback and total_size > 0:
+                        progress_callback(
+                            downloaded / total_size * 100,
+                            filename,
+                        )
+
+                    with open(partial_path, mode) as file:
+
+                        for chunk in response.iter_content(
+                            chunk_size=CHUNK_SIZE
+                        ):
+
+                            if not chunk:
+                                continue
+
+                            file.write(chunk)
+                            downloaded += len(chunk)
+
+                            if progress_callback and total_size > 0:
+
+                                percentage = (
+                                    downloaded / total_size
+                                ) * 100
+
+                                progress_callback(
+                                    min(percentage, 99.9),
+                                    filename,
+                                )
+
+                        file.flush()
+                        os.fsync(file.fileno())
+
+                actual_size = partial_path.stat().st_size
+
+                if total_size > 0 and actual_size != total_size:
+                    raise ValueError(
+                        f"حجم فایل کامل نیست؛ "
+                        f"دریافت‌شده: {actual_size:,} "
+                        f"از {total_size:,} بایت"
+                    )
+
+                if actual_size <= 0:
+                    raise ValueError("فایل دانلودشده خالی است.")
+
+                # جایگزینی فایل نهایی پس از تکمیل
+                os.replace(partial_path, final_path)
+
+                add_log(
+                    f"دانلود موفق: {filename} "
+                    f"({actual_size / 1024 / 1024:.2f} MB)"
+                )
+
+                if progress_callback:
+                    progress_callback(100, filename)
+
+                return "success"
+
+            except Exception as exc:
+
+                error_message = str(exc)
+
+                errors.append(
+                    f"{filename} | تلاش {attempt} | {error_message}"
+                )
+
+                add_log(
+                    f"خطا در {filename} "
+                    f"(تلاش {attempt}): {error_message}"
+                )
+
+                if attempt < MAX_RETRIES:
+                    time.sleep(min(attempt * 2, 8))
+
+        # اگر Worker جواب نداد، مسیر اصلی امتحان می‌شود.
+        # فایل نیمه‌دانلودشده حفظ می‌شود تا امکان Resume باقی بماند.
+
+    raise RuntimeError(
+        f"دانلود {filename} ناموفق بود. "
+        + " | ".join(errors[-4:])
+    )
+
+
+# ============================================================
+# اجرای دانلود و نمایش زنده پیشرفت
+# ============================================================
+
+def run_download(selected_urls, overwrite):
+    """دانلود ترتیبی فایل‌ها با به‌روزرسانی مستقیم رابط کاربری."""
+
+    total = len(selected_urls)
+
+    st.session_state.download_status = "running"
+    st.session_state.download_total = total
+    st.session_state.download_current_index = 0
+    st.session_state.download_current_file = ""
+    st.session_state.download_progress = 0.0
+    st.session_state.download_failed = []
+    st.session_state.download_success = []
+    st.session_state.download_logs = []
+
+    overall_progress = st.progress(0.0)
+    file_progress = st.progress(0.0)
+
+    status_box = st.status(
+        "در حال آماده‌سازی دانلود...",
+        expanded=True,
+    )
+
+    current_text = st.empty()
+    detail_text = st.empty()
+
+    try:
+
+        for index, url in enumerate(selected_urls, start=1):
+
+            filename = safe_filename(
+                urlsplit(url).path.split("/")[-1]
+            )
+
+            st.session_state.download_current_index = index
+            st.session_state.download_current_file = filename
+            st.session_state.download_progress = 0.0
+
+            current_text.markdown(
+                f"**فایل {index} از {total}:** `{filename}`"
+            )
+
+            file_progress.progress(0.0)
+
+            def update_file_progress(percent, current_filename):
+
+                percent = max(0.0, min(float(percent), 100.0))
+
+                st.session_state.download_progress = percent
+
+                file_progress.progress(
+                    percent / 100.0
+                )
+
+                detail_text.caption(
+                    f"پیشرفت فایل جاری: {percent:.1f}%"
+                )
+
+            try:
+
+                result = download_single_file(
+                    url,
+                    overwrite=overwrite,
+                    progress_callback=update_file_progress,
+                )
+
+                if result == "success":
+                    st.session_state.download_success.append(filename)
+
+                elif result == "skipped":
+                    st.session_state.download_success.append(
+                        filename + " (موجود)"
+                    )
+
+            except Exception as exc:
+
+                st.session_state.download_failed.append(filename)
+
+                add_log(
+                    f"دانلود ناموفق {filename}: {exc}"
+                )
+
+            overall_progress.progress(index / total)
+
+        st.session_state.download_status = "finished"
+
+        status_box.update(
+            label="عملیات دانلود به پایان رسید.",
+            state="complete",
+            expanded=True,
+        )
+
+    except Exception as exc:
+
+        st.session_state.download_status = "error"
+
+        add_log(f"خطای کلی برنامه: {exc}")
+
+        status_box.update(
+            label="عملیات با خطا متوقف شد.",
+            state="error",
+            expanded=True,
+        )
+
+    finally:
+
+        st.session_state.download_current_file = ""
+
+
+# ============================================================
+# اجزای رابط کاربری
+# ============================================================
+
+def render_header():
+
+    st.markdown(
+        """
+        <div class="hero">
+            <div class="hero-title">
+                🧬 Raabin WBC Downloader
+            </div>
+            <div class="hero-subtitle">
+                ابزار دریافت و مدیریت فایل‌های دیتاست
+                <b>Raabin-WBC</b>
+                <br>
+                انتخاب بازه فایل‌ها، دانلود با قابلیت Resume
+                و مشاهده وضعیت دریافت اطلاعات.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_statistics():
+
+    links = st.session_state.zip_links or []
+
+    downloaded_count = len(
+        list(DOWNLOAD_DIR.glob("*.zip"))
+    )
+
+    success_count = len(
+        st.session_state.download_success
+    )
+
+    failed_count = len(
+        st.session_state.download_failed
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    cards = [
+        (col1, len(links), "فایل شناسایی‌شده"),
+        (col2, downloaded_count, "فایل موجود"),
+        (col3, success_count, "دانلود موفق"),
+        (col4, failed_count, "دانلود ناموفق"),
+    ]
+
+    for col, number, label in cards:
+
+        with col:
+
+            st.markdown(
+                f"""
+                <div class="info-card">
+                    <div class="info-number">{number:,}</div>
+                    <div class="info-label">{label}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+def render_file_list():
+
+    links = st.session_state.zip_links
+
+    if not links:
         return
+
+    with st.expander(
+        f"مشاهده فهرست فایل‌ها ({len(links)} فایل)",
+        expanded=False,
+    ):
+
+        search = st.text_input(
+            "جست‌وجوی نام فایل",
+            key="filename_search",
+        )
+
+        filtered = []
+
+        for index, url in enumerate(links, start=1):
+
+            filename = safe_filename(
+                urlsplit(url).path.split("/")[-1]
+            )
+
+            if search.lower() in filename.lower():
+                filtered.append((index, filename))
+
+        if not filtered:
+
+            st.info("فایلی با این نام پیدا نشد.")
+
+        else:
+
+            st.caption(
+                f"{len(filtered)} فایل نمایش داده می‌شود."
+            )
+
+            for index, filename in filtered[:200]:
+
+                st.text(f"{index:04d}  |  {filename}")
+
+            if len(filtered) > 200:
+                st.caption(
+                    "برای جلوگیری از شلوغی، فقط ۲۰۰ نتیجه اول نمایش داده شد."
+                )
+
+
+def render_download_controls():
+
+    links = st.session_state.zip_links
+
+    if not links:
+        return
+
+    total = len(links)
+
+    st.markdown(
+        '<div class="section-title">تنظیم دانلود</div>',
+        unsafe_allow_html=True,
+    )
+
+    range_value = st.text_input(
+        "شماره فایل‌های موردنظر",
+        value="1-20",
+        placeholder="مثلاً 1-20 یا 1,3,5 یا all",
+        key="download_range",
+    )
+
+    indices = parse_range(range_value, total)
+
+    if indices is None:
+
+        st.error(
+            f"بازه واردشده معتبر نیست. شماره فایل‌ها باید بین ۱ و {total} باشند."
+        )
+
+        return
+
+    selected_urls = [
+        links[index - 1]
+        for index in indices
+    ]
 
     st.caption(
-        f"Selected: files **{indices[0]}** to **{indices[-1]}** "
-        f"({len(indices)} files)"
+        f"تعداد فایل انتخاب‌شده: **{len(selected_urls)}** "
+        f"| اولین فایل: **{indices[0]}** "
+        f"| آخرین فایل: **{indices[-1]}**"
     )
 
-    # ---------- 3) شروع دانلود ----------
-    if "download_status" not in state:
-        state.download_status = "idle"
+    overwrite = st.checkbox(
+        "دانلود مجدد فایل‌هایی که قبلاً دریافت شده‌اند",
+        value=False,
+    )
 
-    if state.download_status == "running":
-        st.warning("Download already in progress...")
-        # ادامه نمایش وضعیت در پایین
-    elif st.button("Start download", type="primary"):
-        selected = [state.zip_links[n - 1] for n in indices]
-        # پاک کردن وضعیت قبلی
-        state.download_finished = False
-        state.download_failed = []
-        state.download_logs = []
-        thread = threading.Thread(
-            target=_run_download_thread,
-            args=(selected, total, indices[0]),
-            daemon=True,
+    st.warning(
+        "فایل‌ها روی فضای ذخیره‌سازی سرور اجرای Streamlit ذخیره می‌شوند، "
+        "نه مستقیماً روی کامپیوتر شما."
+    )
+
+    if st.button(
+        "شروع دانلود",
+        type="primary",
+        use_container_width=True,
+        disabled=not selected_urls,
+    ):
+
+        run_download(
+            selected_urls,
+            overwrite=overwrite,
         )
-        thread.start()
-        st.rerun()
 
-    # ---------- 4) نمایش وضعیت ----------
-    if state.download_status == "running":
-        st.info(
-            f"Downloading file {state.download_current_index}/"
-            f"{state.download_total}: {state.download_current_file}"
-        )
-        st.progress(state.download_progress / 100.0)
-        # هر ۲ ثانیه UI را دوباره اجرا کن تا پیشرفت به‌روز شود
-        time.sleep(2)
-        st.rerun()
 
-    if state.download_status == "finished":
-        st.success("Download finished.")
-        if state.download_failed:
-            st.error(f"Failed files ({len(state.download_failed)}): "
-                     f"{', '.join(state.download_failed)}")
+def render_results():
+
+    status = st.session_state.download_status
+
+    if status not in ("finished", "error"):
+        return
+
+    st.divider()
+
+    st.markdown(
+        '<div class="section-title">گزارش عملیات</div>',
+        unsafe_allow_html=True,
+    )
+
+    success = st.session_state.download_success
+    failed = st.session_state.download_failed
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.metric("دانلود موفق", len(success))
+
+    with col2:
+        st.metric("دانلود ناموفق", len(failed))
+
+    if failed:
+
+        st.error("برخی فایل‌ها دانلود نشدند.")
+
+        with st.expander("مشاهده فایل‌های ناموفق", expanded=True):
+
+            for filename in failed:
+                st.text(filename)
+
+    if success:
+
+        with st.expander("مشاهده فایل‌های موفق"):
+
+            for filename in success:
+                st.text(filename)
+
+
+def render_logs():
+
+    logs = st.session_state.download_logs
+
+    with st.expander("گزارش فنی و لاگ‌ها", expanded=False):
+
+        if not logs:
+
+            st.info("هنوز گزارشی ثبت نشده است.")
+
         else:
-            st.success("All files downloaded successfully.")
 
-        # نمایش لاگ
-        with st.expander("Download log", expanded=False):
-            for line in state.download_logs[-50:]:
-                st.text(line)
+            st.code(
+                "\n".join(logs[-100:]),
+                language="text",
+            )
 
-        # دکمه بازنشانی برای دانلود بازه بعدی
-        if st.button("Reset / Download another range"):
-            state.download_status = "idle"
-            state.download_finished = False
-            st.rerun()
+            st.download_button(
+                "دریافت فایل گزارش",
+                data="\n".join(logs).encode("utf-8"),
+                file_name="download_log.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+
+
+# ============================================================
+# اجرای اصلی
+# ============================================================
+
+def main():
+
+    render_header()
+
+    with st.sidebar:
+
+        st.markdown("## 🧬 Raabin WBC")
+
+        st.caption("Dataset Downloader")
+
+        st.divider()
+
+        st.markdown("### اطلاعات منبع")
+
+        st.markdown(
+            """
+            - **Dataset:** Raabin-WBC
+            - **Directory:** First Microscope
+            - **Format:** ZIP
+            - **Download:** Resume enabled
+            """
+        )
+
+        st.divider()
+
+        st.markdown("### مسیر ذخیره‌سازی")
+
+        st.code(str(DOWNLOAD_DIR.resolve()))
+
+        st.caption(
+            "این مسیر متعلق به محیط اجرای برنامه است."
+        )
+
+    # دریافت فهرست فایل‌ها
+
+    col1, col2 = st.columns([3, 1])
+
+    with col1:
+
+        st.markdown(
+            '<div class="section-title">فهرست دیتاست</div>',
+            unsafe_allow_html=True,
+        )
+
+    with col2:
+
+        if st.button(
+            "دریافت / به‌روزرسانی فهرست",
+            use_container_width=True,
+        ):
+
+            try:
+
+                with st.spinner("در حال دریافت فهرست فایل‌ها..."):
+
+                    links = get_zip_links()
+
+                st.session_state.zip_links = links
+
+                if links:
+
+                    st.success(
+                        f"{len(links)} فایل ZIP شناسایی شد."
+                    )
+
+                else:
+
+                    st.warning(
+                        "هیچ فایل ZIP در صفحه پیدا نشد."
+                    )
+
+            except Exception as exc:
+
+                st.error(
+                    f"دریافت فهرست ناموفق بود: {exc}"
+                )
+
+    if not st.session_state.zip_links:
+
+        st.info(
+            "برای مشاهده فایل‌های دیتاست، ابتدا روی "
+            "«دریافت / به‌روزرسانی فهرست» کلیک کن."
+        )
+
+        return
+
+    render_statistics()
+
+    st.divider()
+
+    render_file_list()
+
+    st.divider()
+
+    render_download_controls()
+
+    render_results()
+
+    render_logs()
+
+    st.divider()
+
+    st.markdown(
+        """
+        <p class="small-note">
+        Raabin WBC Downloader |
+        ابزار کمکی دریافت فایل‌های دیتاست
+        </p>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+if __name__ == "__main__":
+    main()
