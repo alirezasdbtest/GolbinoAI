@@ -156,19 +156,21 @@ def inject_css():
 
         @import url('https://fonts.googleapis.com/css2?family=Estedad:wght@300;400;500;600;700;800&display=swap');
 
-        :root {{
-            --bg: #242232;
-            --bg-soft: #302d40;
-            --glass: rgba(255,255,255,0.075);
-            --glass-strong: rgba(255,255,255,0.115);
-            --border: rgba(255,255,255,0.15);
-            --text: #F5F2FC;
-            --muted: #C4BED5;
-            --purple: #B6A1F5;
-            --purple-dark: #8972D0;
-            --mint: #9EDCCB;
-            --pink: #E6A9C8;
-        }}
+        
+        :root {
+            --bg: #F0EDF7;
+            --bg-soft: #E8E3F1;
+            --glass: rgba(255,255,255,0.62);
+            --glass-strong: rgba(255,255,255,0.82);
+            --border: rgba(91,75,125,0.15);
+            --text: #29243A;
+            --muted: #625B70;
+            --purple: #8065B8;
+            --purple-dark: #68509E;
+            --mint: #438F7B;
+            --pink: #B65F88;
+        }
+
 
         html, body, [data-testid="stAppViewContainer"] {{
             background:
