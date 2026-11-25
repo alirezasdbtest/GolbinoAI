@@ -1,1082 +1,1410 @@
 
-import os
-import re
-import time
-import html
-import threading
+# -*- coding: utf-8 -*-
+"""
+GolbinoAI
+رابط کاربری پژوهشی برای بررسی تصاویر میکروسکوپی خون محیطی
+نسخه UI - بدون اتصال به مدل تشخیص واقعی
+"""
+
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit, unquote, quote
+from datetime import datetime
+import io
+import random
 
-import requests
 import streamlit as st
-from bs4 import BeautifulSoup
+import pandas as pd
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter
 
 
-# ============================================================
-# تنظیمات اصلی
-# ============================================================
+# =========================================================
+# 1. تنظیمات اولیه
+# =========================================================
 
 st.set_page_config(
-    page_title="Raabin WBC Downloader",
-    page_icon="🧬",
+    page_title="GolbinoAI | تحلیل هوشمند خون",
+    page_icon="🩸",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded"
 )
 
-PAGE_URL = (
-    "https://dl.raabindata.com/"
-    "Index%20of%20WBC%20Data/"
-    "Index%20of%20WBC%20First_microscope/"
-)
+BASE_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = BASE_DIR / "assets"
+FONTS_DIR = ASSETS_DIR / "fonts"
 
-WORKER_BASE = (
-    "https://broad-dew-8b34.alirezasaidi13802001.workers.dev/"
-)
+LOGO_CANDIDATES = [
+    ASSETS_DIR / "logo.png",
+    ASSETS_DIR / "golbino_mascot.png",
+    BASE_DIR / "golbino_mascot.png",
+]
 
-DOWNLOAD_DIR = Path("downloads")
-PARTIAL_DIR = DOWNLOAD_DIR / ".partial"
+FONT_REGULAR_CANDIDATES = [
+    FONTS_DIR / "Estedad-Regular.ttf",
+    FONTS_DIR / "Vazirmatn-Regular.ttf",
+]
 
-DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-PARTIAL_DIR.mkdir(parents=True, exist_ok=True)
+FONT_BOLD_CANDIDATES = [
+    FONTS_DIR / "Estedad-Bold.ttf",
+    FONTS_DIR / "Vazirmatn-Bold.ttf",
+]
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+CELL_NAMES = {
+    "Neutrophil": "نوتروفیل",
+    "Lymphocyte": "لنفوسیت",
+    "Monocyte": "مونوسیت",
+    "Eosinophil": "ائوزینوفیل",
+    "Basophil": "بازوفیل",
+}
+
+CELL_COLORS = {
+    "Neutrophil": "#62B6A8",
+    "Lymphocyte": "#8C83D8",
+    "Monocyte": "#D69B65",
+    "Eosinophil": "#D77FA6",
+    "Basophil": "#7199CE",
+}
+
+CELL_DESCRIPTIONS = {
+    "Neutrophil": "نوتروفیل‌ها از مهم‌ترین سلول‌های سیستم ایمنی ذاتی هستند و در پاسخ به عفونت‌های باکتریایی نقش دارند.",
+    "Lymphocyte": "لنفوسیت‌ها در پاسخ‌های ایمنی اختصاصی و تولید آنتی‌بادی نقش مهمی دارند.",
+    "Monocyte": "مونوسیت‌ها از سلول‌های بزرگ خون هستند و می‌توانند به ماکروفاژها و سلول‌های دندریتیک تبدیل شوند.",
+    "Eosinophil": "ائوزینوفیل‌ها در پاسخ به انگل‌ها و برخی واکنش‌های آلرژیک نقش دارند.",
+    "Basophil": "بازوفیل‌ها از گلبول‌های سفید کم‌تعداد هستند و در واکنش‌های آلرژیک مشارکت دارند.",
+}
+
+
+# =========================================================
+# 2. وضعیت برنامه
+# =========================================================
+
+if "page" not in st.session_state:
+    st.session_state.page = "خانه"
+
+if "uploaded_image" not in st.session_state:
+    st.session_state.uploaded_image = None
+
+if "uploaded_name" not in st.session_state:
+    st.session_state.uploaded_name = None
+
+if "analysis_history" not in st.session_state:
+    st.session_state.analysis_history = []
+
+if "selected_sample" not in st.session_state:
+    st.session_state.selected_sample = None
+
+
+def go_to(page):
+    st.session_state.page = page
+    st.rerun()
+
+
+# =========================================================
+# 3. توابع کمکی
+# =========================================================
+
+def find_file(candidates):
+    for path in candidates:
+        if path.exists() and path.is_file():
+            return path
+    return None
+
+
+def load_logo():
+    path = find_file(LOGO_CANDIDATES)
+    if path:
+        try:
+            return Image.open(path).convert("RGBA")
+        except Exception:
+            return None
+    return None
+
+
+def get_font_css():
+    regular = find_file(FONT_REGULAR_CANDIDATES)
+    bold = find_file(FONT_BOLD_CANDIDATES)
+
+    css = ""
+
+    if regular:
+        css += f"""
+        @font-face {{
+            font-family: 'GolbinoFont';
+            src: url('assets/fonts/{regular.name}') format('truetype');
+            font-weight: 400;
+        }}
+        """
+
+    if bold:
+        css += f"""
+        @font-face {{
+            font-family: 'GolbinoFont';
+            src: url('assets/fonts/{bold.name}') format('truetype');
+            font-weight: 700;
+        }}
+        """
+
+    return css
+
+
+def inject_css():
+    font_css = get_font_css()
+
+    st.markdown(
+        f"""
+        <style>
+        {font_css}
+
+        @import url('https://fonts.googleapis.com/css2?family=Estedad:wght@300;400;500;600;700;800&display=swap');
+
+        :root {{
+            --bg: #242232;
+            --bg-soft: #302d40;
+            --glass: rgba(255,255,255,0.075);
+            --glass-strong: rgba(255,255,255,0.115);
+            --border: rgba(255,255,255,0.15);
+            --text: #F5F2FC;
+            --muted: #C4BED5;
+            --purple: #B6A1F5;
+            --purple-dark: #8972D0;
+            --mint: #9EDCCB;
+            --pink: #E6A9C8;
+        }}
+
+        html, body, [data-testid="stAppViewContainer"] {{
+            background:
+                radial-gradient(ellipse at 12% 5%, rgba(135,110,190,.22), transparent 35%),
+                radial-gradient(ellipse at 88% 18%, rgba(90,155,165,.13), transparent 32%),
+                linear-gradient(145deg, #252333 0%, #302d40 52%, #242332 100%);
+            color: var(--text);
+            font-family: {'GolbinoFont' if find_file(FONT_REGULAR_CANDIDATES) else 'Estedad'}, sans-serif;
+        }}
+
+        [data-testid="stHeader"] {{
+            background: rgba(0,0,0,0);
+        }}
+
+        [data-testid="stToolbar"] {{
+            right: 1rem;
+        }}
+
+        [data-testid="stMainBlockContainer"] {{
+            max-width: 1450px;
+            padding-top: 2rem;
+            padding-bottom: 4rem;
+        }}
+
+        [data-testid="stSidebar"] {{
+            background: linear-gradient(180deg, rgba(42,39,57,.96), rgba(34,32,47,.98));
+            border-left: 1px solid rgba(255,255,255,.10);
+            border-right: none;
+        }}
+
+        [data-testid="stSidebar"] * {{
+            color: var(--text);
+        }}
+
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {{
+            text-align: right;
+        }}
+
+        [data-testid="stMarkdownContainer"],
+        [data-testid="stText"],
+        [data-testid="stCaptionContainer"],
+        [data-testid="stAlert"] {{
+            direction: rtl;
+            text-align: right;
+            color: var(--text);
+        }}
+
+        h1, h2, h3, h4, h5, h6 {{
+            color: #FAF8FF !important;
+            font-family: inherit !important;
+            letter-spacing: -0.4px;
+        }}
+
+        p, li, label {{
+            color: var(--muted);
+            line-height: 1.9;
+        }}
+
+        a {{
+            color: #C6B4FF !important;
+        }}
+
+        /* دکمه‌ها */
+        .stButton > button,
+        .stDownloadButton > button {{
+            border: 1px solid rgba(255,255,255,.20);
+            border-radius: 15px;
+            min-height: 45px;
+            padding: .55rem 1.2rem;
+            color: #F9F6FF;
+            background: linear-gradient(
+                135deg,
+                rgba(160,137,224,.42),
+                rgba(117,105,163,.27)
+            );
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,.22),
+                0 7px 22px rgba(10,8,25,.18);
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
+            font-family: inherit;
+            font-weight: 600;
+            transition: all .2s ease;
+        }}
+
+        .stButton > button:hover,
+        .stDownloadButton > button:hover {{
+            border-color: rgba(210,195,255,.65);
+            background: linear-gradient(
+                135deg,
+                rgba(180,158,245,.55),
+                rgba(135,120,190,.40)
+            );
+            transform: translateY(-2px);
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,.30),
+                0 12px 28px rgba(10,8,25,.28);
+        }}
+
+        .stButton > button:focus,
+        .stDownloadButton > button:focus {{
+            box-shadow: 0 0 0 2px rgba(190,170,255,.3);
+        }}
+
+        /* ورودی‌ها */
+        [data-testid="stFileUploader"] {{
+            direction: rtl;
+            border: 1px dashed rgba(205,190,255,.42);
+            border-radius: 20px;
+            background: rgba(255,255,255,.045);
+            padding: 12px;
+        }}
+
+        [data-testid="stFileUploader"] section {{
+            background: transparent;
+        }}
+
+        [data-testid="stFileUploader"] button {{
+            border-radius: 12px;
+        }}
+
+        [data-testid="stTextInput"] input,
+        [data-testid="stSelectbox"] div[data-baseweb="select"],
+        [data-testid="stTextArea"] textarea {{
+            direction: rtl;
+            text-align: right;
+            color: var(--text);
+            background: rgba(255,255,255,.07);
+            border-color: var(--border);
+            border-radius: 13px;
+        }}
+
+        [data-testid="stDataFrame"] {{
+            direction: ltr;
+        }}
+
+        /* کارت شیشه‌ای */
+        .glass-card {{
+            position: relative;
+            overflow: hidden;
+            background:
+                linear-gradient(
+                    135deg,
+                    rgba(255,255,255,.135),
+                    rgba(255,255,255,.045) 48%,
+                    rgba(180,160,230,.065)
+                );
+            border: 1px solid rgba(255,255,255,.17);
+            border-radius: 24px;
+            padding: 25px;
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,.20),
+                inset 0 -1px 0 rgba(255,255,255,.035),
+                0 18px 45px rgba(8,7,22,.22);
+            backdrop-filter: blur(24px) saturate(150%);
+            -webkit-backdrop-filter: blur(24px) saturate(150%);
+            margin-bottom: 16px;
+        }}
+
+        .glass-card:before {{
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 9%;
+            width: 72%;
+            height: 1px;
+            background: linear-gradient(
+                90deg,
+                transparent,
+                rgba(255,255,255,.55),
+                transparent
+            );
+        }}
+
+        .glass-card:after {{
+            content: "";
+            pointer-events: none;
+            position: absolute;
+            top: -90px;
+            right: -100px;
+            width: 240px;
+            height: 190px;
+            border-radius: 50%;
+            background: rgba(210,195,255,.08);
+            filter: blur(40px);
+        }}
+
+        .hero {{
+            padding: 48px 42px;
+            border-radius: 30px;
+            background:
+                radial-gradient(circle at 12% 20%, rgba(189,166,255,.20), transparent 32%),
+                radial-gradient(circle at 90% 80%, rgba(125,211,190,.13), transparent 28%),
+                linear-gradient(135deg, rgba(255,255,255,.13), rgba(255,255,255,.035));
+            border: 1px solid rgba(255,255,255,.19);
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,.24),
+                0 25px 65px rgba(7,6,20,.24);
+            backdrop-filter: blur(30px) saturate(155%);
+            -webkit-backdrop-filter: blur(30px) saturate(155%);
+            margin-bottom: 26px;
+            position: relative;
+            overflow: hidden;
+        }}
+
+        .hero:before {{
+            content: "";
+            position: absolute;
+            top: -130px;
+            left: 20%;
+            width: 420px;
+            height: 240px;
+            background: rgba(205,190,255,.10);
+            filter: blur(65px);
+            border-radius: 50%;
+        }}
+
+        .hero-title {{
+            font-size: clamp(2rem, 4vw, 3.3rem);
+            font-weight: 800;
+            line-height: 1.5;
+            color: #FFFFFF;
+            margin: 0;
+        }}
+
+        .hero-subtitle {{
+            font-size: 1.05rem;
+            color: #D5CFE4;
+            line-height: 2.1;
+            margin-top: 12px;
+            max-width: 780px;
+        }}
+
+        .eyebrow {{
+            display: inline-block;
+            color: #D6C9FF;
+            border: 1px solid rgba(205,190,255,.26);
+            background: rgba(185,165,245,.10);
+            padding: 6px 14px;
+            border-radius: 100px;
+            font-size: .82rem;
+            margin-bottom: 15px;
+        }}
+
+        .section-title {{
+            font-size: 1.35rem;
+            font-weight: 750;
+            color: #F8F5FF;
+            margin: 24px 0 14px 0;
+        }}
+
+        .muted {{
+            color: #C3BDD3;
+            line-height: 1.9;
+        }}
+
+        .metric-card {{
+            padding: 20px;
+            min-height: 130px;
+            border-radius: 20px;
+            background: linear-gradient(145deg, rgba(255,255,255,.12), rgba(255,255,255,.045));
+            border: 1px solid rgba(255,255,255,.14);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.15), 0 12px 28px rgba(0,0,0,.13);
+            backdrop-filter: blur(18px);
+        }}
+
+        .metric-number {{
+            font-size: 1.9rem;
+            font-weight: 800;
+            color: #F7F2FF;
+            direction: ltr;
+            text-align: right;
+        }}
+
+        .metric-label {{
+            color: #C9C2D9;
+            font-size: .9rem;
+            margin-top: 5px;
+        }}
+
+        .cell-dot {{
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-left: 7px;
+        }}
+
+        .status-pill {{
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 100px;
+            background: rgba(230,169,200,.13);
+            color: #F1BED6;
+            border: 1px solid rgba(230,169,200,.24);
+            font-size: .78rem;
+        }}
+
+        .footer {{
+            text-align: center;
+            color: #9992AA;
+            font-size: .8rem;
+            padding: 30px 0 10px;
+            border-top: 1px solid rgba(255,255,255,.08);
+            margin-top: 45px;
+        }}
+
+        [data-testid="stSidebar"] .stRadio label {{
+            padding: 7px 0;
+        }}
+
+        [data-testid="stSidebar"] [role="radiogroup"] {{
+            gap: 8px;
+        }}
+
+        [data-testid="stSidebar"] [role="radio"] {{
+            border-radius: 13px;
+            padding: 9px 12px;
+        }}
+
+        [data-testid="stSidebar"] [aria-checked="true"] {{
+            background: rgba(177,153,240,.16);
+            border: 1px solid rgba(205,190,255,.20);
+        }}
+
+        hr {{
+            border-color: rgba(255,255,255,.10);
+        }}
+
+        @media (max-width: 768px) {{
+            .hero {{
+                padding: 30px 22px;
+            }}
+            .glass-card {{
+                padding: 19px;
+            }}
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True
     )
-}
-
-CHUNK_SIZE = 256 * 1024
-MAX_RETRIES = 4
-TIMEOUT = (30, 180)
 
 
-# ============================================================
-# استایل رابط کاربری
-# ============================================================
+inject_css()
 
-st.markdown(
+
+# =========================================================
+# 4. تصاویر نمونه نمایشی
+# =========================================================
+
+def make_demo_microscopy(seed=10, width=900, height=570):
     """
-    <style>
-    @import url(
-        'https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&display=swap'
-    );
+    تصویرسازی آموزشی و غیرواقعی از محیط اسمیر خون.
+    این تصویر داده میکروسکوپی واقعی نیست.
+    """
+    rng = random.Random(seed)
+    np_rng = np.random.default_rng(seed)
 
-    html, body, [class*="css"] {
-        font-family: 'Vazirmatn', sans-serif;
-    }
+    noise = np_rng.normal(0, 5, (height, width, 3))
+    base = np.zeros((height, width, 3), dtype=np.float32)
+    base[:] = [224, 190, 194]
+    base += noise
+    base = np.clip(base, 0, 255).astype(np.uint8)
 
-    .stApp {
-        background:
-            radial-gradient(
-                circle at 10% 5%,
-                rgba(151, 130, 210, 0.13),
-                transparent 35%
-            ),
-            linear-gradient(135deg, #f5f3fa, #eeedf5);
-        color: #29243a;
-    }
+    img = Image.fromarray(base, "RGB").filter(ImageFilter.GaussianBlur(1.2))
+    draw = ImageDraw.Draw(img, "RGBA")
 
-    [data-testid="stSidebar"] {
-        background: #e9e5f1;
-        border-right: 1px solid rgba(100, 80, 140, 0.12);
-    }
+    # گلبول‌های قرمز
+    for _ in range(65):
+        x = rng.randint(25, width - 25)
+        y = rng.randint(25, height - 25)
+        r = rng.randint(17, 31)
 
-    [data-testid="stHeader"] {
-        background: transparent;
-    }
+        draw.ellipse(
+            (x-r, y-r, x+r, y+r),
+            fill=(190, 105, 125, 115),
+            outline=(150, 75, 100, 90),
+            width=2
+        )
+        draw.ellipse(
+            (x-r*.45, y-r*.45, x+r*.45, y+r*.45),
+            fill=(232, 175, 182, 120)
+        )
 
-    h1, h2, h3, p, label, span {
-        color: #29243a;
-    }
+    # چند سلول سفید نمایشی
+    white_cells = [
+        (220, 185, 47, (105, 75, 155, 210)),
+        (570, 330, 42, (100, 100, 175, 215)),
+        (720, 130, 36, (130, 80, 150, 210)),
+    ]
 
-    .hero {
-        padding: 30px;
-        border-radius: 24px;
-        background: rgba(255, 255, 255, 0.65);
-        border: 1px solid rgba(255, 255, 255, 0.85);
-        box-shadow: 0 12px 35px rgba(45, 35, 75, 0.08);
-        backdrop-filter: blur(18px);
-        margin-bottom: 25px;
-    }
+    for x, y, r, nucleus_color in white_cells:
+        draw.ellipse(
+            (x-r, y-r, x+r, y+r),
+            fill=(238, 218, 218, 240),
+            outline=(180, 145, 165, 230),
+            width=3
+        )
 
-    .hero-title {
-        font-size: 29px;
-        font-weight: 800;
-        color: #302747;
-        margin-bottom: 8px;
-    }
+        for _ in range(5):
+            nx = x + rng.randint(-r//2, r//2)
+            ny = y + rng.randint(-r//2, r//2)
+            nr = rng.randint(8, 15)
+            draw.ellipse(
+                (nx-nr, ny-nr, nx+nr, ny+nr),
+                fill=nucleus_color
+            )
 
-    .hero-subtitle {
-        font-size: 15px;
-        color: #625b70;
-        line-height: 2;
-    }
-
-    .info-card {
-        padding: 20px;
-        border-radius: 18px;
-        background: rgba(255,255,255,0.72);
-        border: 1px solid rgba(255,255,255,0.9);
-        box-shadow: 0 6px 20px rgba(45,35,75,0.05);
-        min-height: 115px;
-    }
-
-    .info-number {
-        font-size: 25px;
-        font-weight: 800;
-        color: #8065b8;
-    }
-
-    .info-label {
-        font-size: 13px;
-        color: #625b70;
-    }
-
-    .section-title {
-        font-size: 20px;
-        font-weight: 700;
-        color: #302747;
-        margin: 15px 0;
-    }
-
-    .small-note {
-        color: #70687d;
-        font-size: 13px;
-        line-height: 1.9;
-    }
-
-    div.stButton > button {
-        border-radius: 12px;
-        border: 1px solid rgba(128,101,184,0.25);
-        font-family: 'Vazirmatn', sans-serif;
-        font-weight: 600;
-        min-height: 43px;
-    }
-
-    div.stButton > button[kind="primary"] {
-        background: #8065b8;
-        color: white;
-        border: none;
-    }
-
-    div.stButton > button[kind="primary"]:hover {
-        background: #6e54a7;
-        color: white;
-    }
-
-    [data-testid="stProgressBar"] > div > div {
-        background-color: #8065b8;
-    }
-
-    code {
-        direction: ltr;
-        text-align: left;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+    return img.filter(ImageFilter.GaussianBlur(.35))
 
 
-# ============================================================
-# وضعیت برنامه
-# ============================================================
-
-DEFAULT_STATE = {
-    "zip_links": None,
-    "download_logs": [],
-    "download_status": "idle",
-    "download_failed": [],
-    "download_success": [],
-    "download_current_file": "",
-    "download_current_index": 0,
-    "download_total": 0,
-    "download_progress": 0.0,
-    "download_started": False,
-}
-
-for key, value in DEFAULT_STATE.items():
-    if key not in st.session_state:
-        st.session_state[key] = value
-
-
-# ============================================================
-# توابع عمومی
-# ============================================================
-
-def add_log(message: str):
-    """ثبت پیام در گزارش برنامه."""
-
-    timestamp = time.strftime("%H:%M:%S")
-    entry = f"[{timestamp}] {message}"
-
-    logs = st.session_state.download_logs
-    logs.append(entry)
-
-    if len(logs) > 300:
-        st.session_state.download_logs = logs[-300:]
-
-
-def natural_key(value: str):
-    """مرتب‌سازی طبیعی نام فایل‌ها."""
-
+def get_demo_samples():
     return [
-        int(part) if part.isdigit() else part.lower()
-        for part in re.split(r"(\d+)", value)
+        {
+            "name": "نمونه نمایشی شماره ۱",
+            "image": make_demo_microscopy(17),
+            "description": "تصویرسازی آموزشی با ظاهر اسمیر خون؛ فاقد داده آزمایشگاهی واقعی."
+        },
+        {
+            "name": "نمونه نمایشی شماره ۲",
+            "image": make_demo_microscopy(42),
+            "description": "تصویرسازی مصنوعی برای نمایش رابط کاربری؛ فاقد نتیجه تشخیصی."
+        },
     ]
 
 
-def safe_filename(filename: str) -> str:
-    """جلوگیری از نام فایل نامعتبر."""
+# =========================================================
+# 5. PDF
+# =========================================================
 
-    filename = unquote(filename)
-    filename = os.path.basename(filename)
-    filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", filename)
+def create_pdf_report(report):
+    """
+    تولید PDF فارسی.
+    برای خروجی صحیح فارسی، فونت فارسی باید در assets/fonts باشد.
+    """
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.enums import TA_RIGHT, TA_CENTER
+        from reportlab.platypus import (
+            SimpleDocTemplate,
+            Paragraph,
+            Spacer,
+            Table,
+            TableStyle
+        )
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+    except ImportError:
+        raise RuntimeError("کتابخانه reportlab نصب نیست.")
 
-    return filename.strip(" .")
+    font_path = find_file(FONT_REGULAR_CANDIDATES)
+    bold_path = find_file(FONT_BOLD_CANDIDATES)
 
+    if not font_path:
+        raise RuntimeError(
+            "فونت فارسی پیدا نشد. فایل Vazirmatn-Regular.ttf را در "
+            "assets/fonts قرار بده."
+        )
 
-def get_worker_url(original_url: str) -> str:
-    """ساخت آدرس Worker از آدرس اصلی."""
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+    except ImportError:
+        raise RuntimeError(
+            "برای ساخت PDF فارسی باید arabic-reshaper و python-bidi نصب باشند."
+        )
 
-    parsed = urlsplit(original_url)
+    pdfmetrics.registerFont(TTFont("Persian", str(font_path)))
 
-    relative_path = parsed.path.lstrip("/")
+    if bold_path:
+        pdfmetrics.registerFont(TTFont("PersianBold", str(bold_path)))
+        bold_font = "PersianBold"
+    else:
+        bold_font = "Persian"
 
-    if parsed.query:
-        relative_path += "?" + parsed.query
+    def fa(text):
+        return get_display(arabic_reshaper.reshape(str(text)))
 
-    return WORKER_BASE.rstrip("/") + "/" + relative_path
+    buffer = io.BytesIO()
 
-
-def get_url_candidates(original_url: str):
-    """آدرس Worker و آدرس اصلی را به‌عنوان مسیرهای جایگزین برمی‌گرداند."""
-
-    worker_url = get_worker_url(original_url)
-
-    if worker_url == original_url:
-        return [original_url]
-
-    return [worker_url, original_url]
-
-
-# ============================================================
-# دریافت فهرست فایل‌ها
-# ============================================================
-
-def fetch_directory(url: str):
-    """دریافت محتوای صفحه فهرست فایل‌ها."""
-
-    errors = []
-
-    for candidate in get_url_candidates(url):
-
-        try:
-            response = requests.get(
-                candidate,
-                headers=HEADERS,
-                timeout=TIMEOUT,
-            )
-
-            response.raise_for_status()
-
-            if not response.text.strip():
-                raise ValueError("پاسخ سرور خالی است.")
-
-            return response.text
-
-        except Exception as exc:
-            errors.append(str(exc))
-
-    raise RuntimeError(
-        "دریافت فهرست فایل‌ها ناموفق بود: "
-        + " | ".join(errors)
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=42,
+        leftMargin=42,
+        topMargin=45,
+        bottomMargin=45,
+        title="GolbinoAI Report"
     )
 
+    styles = getSampleStyleSheet()
 
-def get_zip_links():
-    """استخراج لینک فایل‌های ZIP از صفحه Raabin."""
+    title_style = ParagraphStyle(
+        "PersianTitle",
+        parent=styles["Title"],
+        fontName=bold_font,
+        fontSize=19,
+        leading=30,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#55447C")
+    )
 
-    page_html = fetch_directory(PAGE_URL)
+    normal_style = ParagraphStyle(
+        "PersianNormal",
+        parent=styles["Normal"],
+        fontName="Persian",
+        fontSize=10,
+        leading=19,
+        alignment=TA_RIGHT,
+        textColor=colors.HexColor("#333333")
+    )
 
-    soup = BeautifulSoup(page_html, "html.parser")
+    story = [
+        Paragraph(fa("گزارش سامانه GolbinoAI"), title_style),
+        Spacer(1, 18),
+        Paragraph(fa("گزارش نمایشی - فاقد اعتبار تشخیصی"), normal_style),
+        Spacer(1, 10),
+        Paragraph(fa(f"نام تصویر: {report['filename']}"), normal_style),
+        Paragraph(fa(f"تاریخ ثبت: {report['date']}"), normal_style),
+        Spacer(1, 20),
+    ]
 
-    links = []
+    table_data = [
+        [
+            Paragraph(fa("نوع سلول"), normal_style),
+            Paragraph(fa("تعداد نمایشی"), normal_style),
+            Paragraph(fa("درصد نمایشی"), normal_style),
+        ]
+    ]
 
-    for anchor in soup.find_all("a", href=True):
+    for item in report["results"]:
+        table_data.append([
+            Paragraph(fa(item["name_fa"]), normal_style),
+            Paragraph(str(item["count"]), normal_style),
+            Paragraph(f"{item['percentage']}%", normal_style),
+        ])
 
-        href = anchor.get("href", "").strip()
+    table = Table(table_data, colWidths=[220, 100, 100], repeatRows=1)
 
-        if not href:
-            continue
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8E1F5")),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#333333")),
+        ("GRID", (0, 0), (-1, -1), .5, colors.HexColor("#D5CDE2")),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+    ]))
 
-        if not re.search(r"\.zip(?:$|\?)", href, re.IGNORECASE):
-            continue
-
-        full_url = urljoin(PAGE_URL, href)
-
-        links.append(full_url)
-
-    links = sorted(
-        set(links),
-        key=lambda url: natural_key(
-            safe_filename(urlsplit(url).path.split("/")[-1])
+    story.extend([
+        table,
+        Spacer(1, 24),
+        Paragraph(
+            fa(
+                "توجه: اعداد این گزارش صرفاً برای نمایش قابلیت‌های رابط کاربری "
+                "تولید شده‌اند و حاصل تحلیل تصویر یا مدل هوش مصنوعی نیستند."
+            ),
+            normal_style
         ),
-    )
-
-    return links
-
-
-# ============================================================
-# پردازش بازه انتخابی
-# ============================================================
-
-def parse_range(raw: str, total: int):
-    """
-    نمونه ورودی:
-    all
-    1-20
-    20-30
-    5
-    5-
-    1,3,5
-    1-5,8,10-12
-    """
-
-    raw = raw.strip().lower()
-
-    if raw in ("all", "*"):
-        return list(range(1, total + 1))
-
-    if not raw:
-        return None
-
-    selected = set()
-
-    try:
-
-        parts = raw.split(",")
-
-        for part in parts:
-
-            part = part.strip()
-
-            if not part:
-                return None
-
-            if "-" in part:
-
-                left, right = part.split("-", 1)
-
-                start = int(left.strip())
-                end = int(right.strip()) if right.strip() else total
-
-            else:
-
-                start = int(part)
-                end = start
-
-            if start < 1 or end < start or end > total:
-                return None
-
-            selected.update(range(start, end + 1))
-
-        return sorted(selected)
-
-    except (ValueError, TypeError):
-        return None
-
-
-# ============================================================
-# دانلود فایل
-# ============================================================
-
-def get_total_size(response, downloaded_before: int):
-    """تشخیص حجم واقعی فایل از هدرهای پاسخ."""
-
-    content_range = response.headers.get("Content-Range", "")
-
-    match = re.search(r"/(\d+)$", content_range)
-
-    if match:
-        return int(match.group(1))
-
-    content_length = response.headers.get("Content-Length")
-
-    if content_length:
-
-        try:
-            length = int(content_length)
-
-            if response.status_code == 206:
-                return downloaded_before + length
-
-            return length
-
-        except ValueError:
-            pass
-
-    return 0
-
-
-def download_single_file(
-    original_url: str,
-    overwrite: bool,
-    progress_callback=None,
-):
-    """
-    دانلود با قابلیت Resume.
-    فایل ابتدا با پسوند part ذخیره می‌شود.
-    پس از اتمام و بررسی حجم، به ZIP تبدیل می‌شود.
-    """
-
-    filename = safe_filename(
-        urlsplit(original_url).path.split("/")[-1]
-    )
-
-    if not filename:
-        raise ValueError("نام فایل معتبر نیست.")
-
-    final_path = DOWNLOAD_DIR / filename
-    partial_path = PARTIAL_DIR / (filename + ".part")
-
-    # اگر فایل کامل از قبل موجود است
-    if final_path.exists() and not overwrite:
-
-        add_log(f"رد شد؛ فایل از قبل وجود دارد: {filename}")
-
-        if progress_callback:
-            progress_callback(100, filename)
-
-        return "skipped"
-
-    errors = []
-
-    for candidate in get_url_candidates(original_url):
-
-        for attempt in range(1, MAX_RETRIES + 1):
-
-            try:
-
-                downloaded_before = (
-                    partial_path.stat().st_size
-                    if partial_path.exists()
-                    else 0
-                )
-
-                headers = HEADERS.copy()
-
-                if downloaded_before > 0:
-                    headers["Range"] = f"bytes={downloaded_before}-"
-
-                with requests.get(
-                    candidate,
-                    headers=headers,
-                    stream=True,
-                    timeout=TIMEOUT,
-                    allow_redirects=True,
-                ) as response:
-
-                    if response.status_code not in (200, 206):
-                        response.raise_for_status()
-
-                    # اگر سرور Range را پشتیبانی نکند، از ابتدا شروع می‌کنیم.
-                    if response.status_code == 206:
-
-                        content_range = response.headers.get(
-                            "Content-Range", ""
-                        )
-
-                        match = re.match(
-                            r"bytes\s+(\d+)-(\d+)/(\d+|\*)",
-                            content_range,
-                            re.IGNORECASE,
-                        )
-
-                        if not match:
-                            raise ValueError(
-                                "پاسخ Range سرور معتبر نیست."
-                            )
-
-                        actual_start = int(match.group(1))
-
-                        if actual_start != downloaded_before:
-                            raise ValueError(
-                                "موقعیت Resume با پاسخ سرور مطابقت ندارد."
-                            )
-
-                        mode = "ab"
-
-                    else:
-
-                        downloaded_before = 0
-                        mode = "wb"
-
-                    total_size = get_total_size(
-                        response,
-                        downloaded_before,
-                    )
-
-                    downloaded = downloaded_before
-
-                    if progress_callback and total_size > 0:
-                        progress_callback(
-                            downloaded / total_size * 100,
-                            filename,
-                        )
-
-                    with open(partial_path, mode) as file:
-
-                        for chunk in response.iter_content(
-                            chunk_size=CHUNK_SIZE
-                        ):
-
-                            if not chunk:
-                                continue
-
-                            file.write(chunk)
-                            downloaded += len(chunk)
-
-                            if progress_callback and total_size > 0:
-
-                                percentage = (
-                                    downloaded / total_size
-                                ) * 100
-
-                                progress_callback(
-                                    min(percentage, 99.9),
-                                    filename,
-                                )
-
-                        file.flush()
-                        os.fsync(file.fileno())
-
-                actual_size = partial_path.stat().st_size
-
-                if total_size > 0 and actual_size != total_size:
-                    raise ValueError(
-                        f"حجم فایل کامل نیست؛ "
-                        f"دریافت‌شده: {actual_size:,} "
-                        f"از {total_size:,} بایت"
-                    )
-
-                if actual_size <= 0:
-                    raise ValueError("فایل دانلودشده خالی است.")
-
-                # جایگزینی فایل نهایی پس از تکمیل
-                os.replace(partial_path, final_path)
-
-                add_log(
-                    f"دانلود موفق: {filename} "
-                    f"({actual_size / 1024 / 1024:.2f} MB)"
-                )
-
-                if progress_callback:
-                    progress_callback(100, filename)
-
-                return "success"
-
-            except Exception as exc:
-
-                error_message = str(exc)
-
-                errors.append(
-                    f"{filename} | تلاش {attempt} | {error_message}"
-                )
-
-                add_log(
-                    f"خطا در {filename} "
-                    f"(تلاش {attempt}): {error_message}"
-                )
-
-                if attempt < MAX_RETRIES:
-                    time.sleep(min(attempt * 2, 8))
-
-        # اگر Worker جواب نداد، مسیر اصلی امتحان می‌شود.
-        # فایل نیمه‌دانلودشده حفظ می‌شود تا امکان Resume باقی بماند.
-
-    raise RuntimeError(
-        f"دانلود {filename} ناموفق بود. "
-        + " | ".join(errors[-4:])
+    ])
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# =========================================================
+# 6. اجزای رابط کاربری
+# =========================================================
+
+def section_title(title, subtitle=None):
+    st.markdown(f'<div class="section-title">{title}</div>', unsafe_allow_html=True)
+    if subtitle:
+        st.markdown(f'<div class="muted">{subtitle}</div>', unsafe_allow_html=True)
+
+
+def glass_card(title, content, icon="✦"):
+    st.markdown(
+        f"""
+        <div class="glass-card">
+            <div style="font-size:1.4rem;margin-bottom:10px;">{icon}</div>
+            <div style="font-size:1.08rem;font-weight:750;color:#F7F3FF;margin-bottom:9px;">
+                {title}
+            </div>
+            <div class="muted">{content}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
     )
 
 
-# ============================================================
-# اجرای دانلود و نمایش زنده پیشرفت
-# ============================================================
-
-def run_download(selected_urls, overwrite):
-    """دانلود ترتیبی فایل‌ها با به‌روزرسانی مستقیم رابط کاربری."""
-
-    total = len(selected_urls)
-
-    st.session_state.download_status = "running"
-    st.session_state.download_total = total
-    st.session_state.download_current_index = 0
-    st.session_state.download_current_file = ""
-    st.session_state.download_progress = 0.0
-    st.session_state.download_failed = []
-    st.session_state.download_success = []
-    st.session_state.download_logs = []
-
-    overall_progress = st.progress(0.0)
-    file_progress = st.progress(0.0)
-
-    status_box = st.status(
-        "در حال آماده‌سازی دانلود...",
-        expanded=True,
+def metric_card(number, label):
+    st.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-number">{number}</div>
+            <div class="metric-label">{label}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
     )
 
-    current_text = st.empty()
-    detail_text = st.empty()
 
-    try:
+def render_header(title, subtitle):
+    st.markdown(
+        f"""
+        <div style="margin-bottom:28px;">
+            <div class="eyebrow">GOLBINOAI · پژوهش هوشمند خون‌شناسی</div>
+            <h1 style="font-size:2.1rem;margin:0 0 8px 0;">{title}</h1>
+            <div class="muted">{subtitle}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-        for index, url in enumerate(selected_urls, start=1):
 
-            filename = safe_filename(
-                urlsplit(url).path.split("/")[-1]
-            )
+def render_footer():
+    st.markdown(
+        """
+        <div class="footer">
+            GolbinoAI · سامانه پژوهشی تحلیل تصاویر خون محیطی
+            <br>
+            این نسخه نمایشی است و جایگزین تشخیص متخصص آزمایشگاه نیست.
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-            st.session_state.download_current_index = index
-            st.session_state.download_current_file = filename
-            st.session_state.download_progress = 0.0
 
-            current_text.markdown(
-                f"**فایل {index} از {total}:** `{filename}`"
-            )
+# =========================================================
+# 7. نوار کناری
+# =========================================================
 
-            file_progress.progress(0.0)
+with st.sidebar:
+    logo = load_logo()
 
-            def update_file_progress(percent, current_filename):
-
-                percent = max(0.0, min(float(percent), 100.0))
-
-                st.session_state.download_progress = percent
-
-                file_progress.progress(
-                    percent / 100.0
-                )
-
-                detail_text.caption(
-                    f"پیشرفت فایل جاری: {percent:.1f}%"
-                )
-
-            try:
-
-                result = download_single_file(
-                    url,
-                    overwrite=overwrite,
-                    progress_callback=update_file_progress,
-                )
-
-                if result == "success":
-                    st.session_state.download_success.append(filename)
-
-                elif result == "skipped":
-                    st.session_state.download_success.append(
-                        filename + " (موجود)"
-                    )
-
-            except Exception as exc:
-
-                st.session_state.download_failed.append(filename)
-
-                add_log(
-                    f"دانلود ناموفق {filename}: {exc}"
-                )
-
-            overall_progress.progress(index / total)
-
-        st.session_state.download_status = "finished"
-
-        status_box.update(
-            label="عملیات دانلود به پایان رسید.",
-            state="complete",
-            expanded=True,
+    if logo:
+        st.image(logo, width=105)
+    else:
+        st.markdown(
+            "<div style='font-size:3rem;text-align:center;'>🩸</div>",
+            unsafe_allow_html=True
         )
 
-    except Exception as exc:
+    st.markdown(
+        """
+        <div style="text-align:center;margin-bottom:20px;">
+            <div style="font-size:1.55rem;font-weight:800;color:#F7F2FF;">
+                GolbinoAI
+            </div>
+            <div style="font-size:.78rem;color:#BDB5D0;">
+                Intelligent Blood Cell Analysis
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-        st.session_state.download_status = "error"
+    st.markdown("---")
+    st.markdown("### فضای کاری")
 
-        add_log(f"خطای کلی برنامه: {exc}")
+    pages = [
+        "خانه",
+        "بررسی تصویر",
+        "نمونه‌های نمایشی",
+        "گزارش‌ها",
+        "راهنمای سلول‌ها",
+        "درباره پروژه",
+    ]
 
-        status_box.update(
-            label="عملیات با خطا متوقف شد.",
-            state="error",
-            expanded=True,
-        )
+    current_index = pages.index(st.session_state.page) if st.session_state.page in pages else 0
 
-    finally:
+    selected_page = st.radio(
+        "منوی اصلی",
+        pages,
+        index=current_index,
+        label_visibility="collapsed"
+    )
 
-        st.session_state.download_current_file = ""
+    if selected_page != st.session_state.page:
+        st.session_state.page = selected_page
+        st.rerun()
+
+    st.markdown("---")
+
+    st.markdown(
+        """
+        <div style="
+            background:rgba(255,255,255,.055);
+            border:1px solid rgba(255,255,255,.10);
+            border-radius:15px;
+            padding:14px;
+            font-size:.82rem;
+            color:#C9C2D9;
+            line-height:1.9;
+        ">
+            <b style="color:#F3EDFF;">وضعیت سامانه</b><br>
+            رابط کاربری: فعال<br>
+            مدل تشخیص: متصل نشده<br>
+            حالت: نسخه پژوهشی اولیه
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 
-# ============================================================
-# اجزای رابط کاربری
-# ============================================================
+# =========================================================
+# 8. صفحه خانه
+# =========================================================
 
-def render_header():
+if st.session_state.page == "خانه":
 
     st.markdown(
         """
         <div class="hero">
+            <div class="eyebrow">نسل جدید تحلیل تصاویر خون محیطی</div>
             <div class="hero-title">
-                🧬 Raabin WBC Downloader
+                نگاهی هوشمندتر<br>
+                به دنیای سلول‌های خونی
             </div>
             <div class="hero-subtitle">
-                ابزار دریافت و مدیریت فایل‌های دیتاست
-                <b>Raabin-WBC</b>
-                <br>
-                انتخاب بازه فایل‌ها، دانلود با قابلیت Resume
-                و مشاهده وضعیت دریافت اطلاعات.
+                GolbinoAI بستری پژوهشی برای بررسی تصاویر میکروسکوپی خون محیطی،
+                مطالعه پنج گروه اصلی گلبول سفید و توسعه ابزارهای هوشمند
+                در حوزه خون‌شناسی است.
             </div>
         </div>
         """,
-        unsafe_allow_html=True,
+        unsafe_allow_html=True
     )
 
+    left, right = st.columns([1.35, 1], gap="large")
 
-def render_statistics():
+    with left:
+        st.markdown(
+            """
+            <div class="glass-card" style="min-height:255px;">
+                <div class="eyebrow">شروع کار</div>
+                <div style="font-size:1.65rem;font-weight:800;color:#FFF;margin-bottom:10px;">
+                    آماده بررسی یک تصویر هستید؟
+                </div>
+                <div class="muted">
+                    تصویر اسمیر خون محیطی خود را بارگذاری کنید و در محیط
+                    GolbinoAI پیش‌نمایش و اطلاعات آن را مشاهده کنید.
+                    اتصال مدل تشخیص در نسخه‌های بعدی انجام خواهد شد.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
-    links = st.session_state.zip_links or []
+        if st.button("🔬  شروع بررسی تصویر", key="home_start", use_container_width=True):
+            go_to("بررسی تصویر")
 
-    downloaded_count = len(
-        list(DOWNLOAD_DIR.glob("*.zip"))
-    )
+    with right:
+        logo = load_logo()
+        if logo:
+            st.image(logo, use_container_width=True)
+        else:
+            st.markdown(
+                """
+                <div class="glass-card" style="
+                    min-height:255px;
+                    display:flex;
+                    align-items:center;
+                    justify-content:center;
+                    text-align:center;
+                    font-size:6rem;
+                ">🩸</div>
+                """,
+                unsafe_allow_html=True
+            )
 
-    success_count = len(
-        st.session_state.download_success
-    )
+    section_title("قابلیت‌های سامانه", "ابزارهایی برای یک تجربه پژوهشی منظم و قابل توسعه")
 
-    failed_count = len(
-        st.session_state.download_failed
-    )
+    c1, c2, c3 = st.columns(3)
 
-    col1, col2, col3, col4 = st.columns(4)
+    with c1:
+        glass_card(
+            "بارگذاری تصویر",
+            "دریافت تصاویر میکروسکوپی با فرمت‌های رایج و نمایش پیش‌نمایش.",
+            "📤"
+        )
 
-    cards = [
-        (col1, len(links), "فایل شناسایی‌شده"),
-        (col2, downloaded_count, "فایل موجود"),
-        (col3, success_count, "دانلود موفق"),
-        (col4, failed_count, "دانلود ناموفق"),
-    ]
+    with c2:
+        glass_card(
+            "مطالعه پنج گروه سلولی",
+            "آشنایی با نوتروفیل، لنفوسیت، مونوسیت، ائوزینوفیل و بازوفیل.",
+            "🔬"
+        )
 
-    for col, number, label in cards:
+    with c3:
+        glass_card(
+            "گزارش پژوهشی",
+            "ساختار اولیه گزارش و خروجی PDF برای نتایج نمایشی.",
+            "📄"
+        )
 
+    section_title("گروه‌های سلولی مورد مطالعه")
+
+    cols = st.columns(5)
+
+    for col, (key, name) in zip(cols, CELL_NAMES.items()):
         with col:
-
+            color = CELL_COLORS[key]
             st.markdown(
                 f"""
-                <div class="info-card">
-                    <div class="info-number">{number:,}</div>
-                    <div class="info-label">{label}</div>
+                <div class="metric-card" style="min-height:110px;">
+                    <div style="
+                        width:12px;height:12px;border-radius:50%;
+                        background:{color};margin-bottom:13px;
+                        box-shadow:0 0 14px {color};
+                    "></div>
+                    <div style="font-weight:750;color:#F7F2FF;">
+                        {name}
+                    </div>
+                    <div style="font-size:.75rem;color:#BDB6CE;direction:ltr;text-align:right;">
+                        {key}
+                    </div>
                 </div>
                 """,
-                unsafe_allow_html=True,
+                unsafe_allow_html=True
             )
 
-
-def render_file_list():
-
-    links = st.session_state.zip_links
-
-    if not links:
-        return
-
-    with st.expander(
-        f"مشاهده فهرست فایل‌ها ({len(links)} فایل)",
-        expanded=False,
-    ):
-
-        search = st.text_input(
-            "جست‌وجوی نام فایل",
-            key="filename_search",
-        )
-
-        filtered = []
-
-        for index, url in enumerate(links, start=1):
-
-            filename = safe_filename(
-                urlsplit(url).path.split("/")[-1]
-            )
-
-            if search.lower() in filename.lower():
-                filtered.append((index, filename))
-
-        if not filtered:
-
-            st.info("فایلی با این نام پیدا نشد.")
-
-        else:
-
-            st.caption(
-                f"{len(filtered)} فایل نمایش داده می‌شود."
-            )
-
-            for index, filename in filtered[:200]:
-
-                st.text(f"{index:04d}  |  {filename}")
-
-            if len(filtered) > 200:
-                st.caption(
-                    "برای جلوگیری از شلوغی، فقط ۲۰۰ نتیجه اول نمایش داده شد."
-                )
+    render_footer()
 
 
-def render_download_controls():
+# =========================================================
+# 9. صفحه بررسی تصویر
+# =========================================================
 
-    links = st.session_state.zip_links
+elif st.session_state.page == "بررسی تصویر":
 
-    if not links:
-        return
-
-    total = len(links)
-
-    st.markdown(
-        '<div class="section-title">تنظیم دانلود</div>',
-        unsafe_allow_html=True,
+    render_header(
+        "بررسی تصویر",
+        "تصویر میکروسکوپی خون محیطی را بارگذاری و اطلاعات آن را مشاهده کنید."
     )
-
-    range_value = st.text_input(
-        "شماره فایل‌های موردنظر",
-        value="1-20",
-        placeholder="مثلاً 1-20 یا 1,3,5 یا all",
-        key="download_range",
-    )
-
-    indices = parse_range(range_value, total)
-
-    if indices is None:
-
-        st.error(
-            f"بازه واردشده معتبر نیست. شماره فایل‌ها باید بین ۱ و {total} باشند."
-        )
-
-        return
-
-    selected_urls = [
-        links[index - 1]
-        for index in indices
-    ]
-
-    st.caption(
-        f"تعداد فایل انتخاب‌شده: **{len(selected_urls)}** "
-        f"| اولین فایل: **{indices[0]}** "
-        f"| آخرین فایل: **{indices[-1]}**"
-    )
-
-    overwrite = st.checkbox(
-        "دانلود مجدد فایل‌هایی که قبلاً دریافت شده‌اند",
-        value=False,
-    )
-
-    st.warning(
-        "فایل‌ها روی فضای ذخیره‌سازی سرور اجرای Streamlit ذخیره می‌شوند، "
-        "نه مستقیماً روی کامپیوتر شما."
-    )
-
-    if st.button(
-        "شروع دانلود",
-        type="primary",
-        use_container_width=True,
-        disabled=not selected_urls,
-    ):
-
-        run_download(
-            selected_urls,
-            overwrite=overwrite,
-        )
-
-
-def render_results():
-
-    status = st.session_state.download_status
-
-    if status not in ("finished", "error"):
-        return
-
-    st.divider()
-
-    st.markdown(
-        '<div class="section-title">گزارش عملیات</div>',
-        unsafe_allow_html=True,
-    )
-
-    success = st.session_state.download_success
-    failed = st.session_state.download_failed
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.metric("دانلود موفق", len(success))
-
-    with col2:
-        st.metric("دانلود ناموفق", len(failed))
-
-    if failed:
-
-        st.error("برخی فایل‌ها دانلود نشدند.")
-
-        with st.expander("مشاهده فایل‌های ناموفق", expanded=True):
-
-            for filename in failed:
-                st.text(filename)
-
-    if success:
-
-        with st.expander("مشاهده فایل‌های موفق"):
-
-            for filename in success:
-                st.text(filename)
-
-
-def render_logs():
-
-    logs = st.session_state.download_logs
-
-    with st.expander("گزارش فنی و لاگ‌ها", expanded=False):
-
-        if not logs:
-
-            st.info("هنوز گزارشی ثبت نشده است.")
-
-        else:
-
-            st.code(
-                "\n".join(logs[-100:]),
-                language="text",
-            )
-
-            st.download_button(
-                "دریافت فایل گزارش",
-                data="\n".join(logs).encode("utf-8"),
-                file_name="download_log.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
-
-
-# ============================================================
-# اجرای اصلی
-# ============================================================
-
-def main():
-
-    render_header()
-
-    with st.sidebar:
-
-        st.markdown("## 🧬 Raabin WBC")
-
-        st.caption("Dataset Downloader")
-
-        st.divider()
-
-        st.markdown("### اطلاعات منبع")
-
-        st.markdown(
-            """
-            - **Dataset:** Raabin-WBC
-            - **Directory:** First Microscope
-            - **Format:** ZIP
-            - **Download:** Resume enabled
-            """
-        )
-
-        st.divider()
-
-        st.markdown("### مسیر ذخیره‌سازی")
-
-        st.code(str(DOWNLOAD_DIR.resolve()))
-
-        st.caption(
-            "این مسیر متعلق به محیط اجرای برنامه است."
-        )
-
-    # دریافت فهرست فایل‌ها
-
-    col1, col2 = st.columns([3, 1])
-
-    with col1:
-
-        st.markdown(
-            '<div class="section-title">فهرست دیتاست</div>',
-            unsafe_allow_html=True,
-        )
-
-    with col2:
-
-        if st.button(
-            "دریافت / به‌روزرسانی فهرست",
-            use_container_width=True,
-        ):
-
-            try:
-
-                with st.spinner("در حال دریافت فهرست فایل‌ها..."):
-
-                    links = get_zip_links()
-
-                st.session_state.zip_links = links
-
-                if links:
-
-                    st.success(
-                        f"{len(links)} فایل ZIP شناسایی شد."
-                    )
-
-                else:
-
-                    st.warning(
-                        "هیچ فایل ZIP در صفحه پیدا نشد."
-                    )
-
-            except Exception as exc:
-
-                st.error(
-                    f"دریافت فهرست ناموفق بود: {exc}"
-                )
-
-    if not st.session_state.zip_links:
-
-        st.info(
-            "برای مشاهده فایل‌های دیتاست، ابتدا روی "
-            "«دریافت / به‌روزرسانی فهرست» کلیک کن."
-        )
-
-        return
-
-    render_statistics()
-
-    st.divider()
-
-    render_file_list()
-
-    st.divider()
-
-    render_download_controls()
-
-    render_results()
-
-    render_logs()
-
-    st.divider()
 
     st.markdown(
         """
-        <p class="small-note">
-        Raabin WBC Downloader |
-        ابزار کمکی دریافت فایل‌های دیتاست
-        </p>
+        <div class="glass-card">
+            <div style="font-size:1.1rem;font-weight:750;color:#FFF;">
+                📁 انتخاب تصویر
+            </div>
+            <div class="muted">
+                فرمت‌های مجاز: JPG، JPEG، PNG و TIFF
+                <br>
+                برای نتایج علمی معتبر، تصویر باید کیفیت و وضوح مناسبی داشته باشد.
+            </div>
+        </div>
         """,
-        unsafe_allow_html=True,
+        unsafe_allow_html=True
     )
 
+    uploaded = st.file_uploader(
+        "تصویر موردنظر را انتخاب کنید",
+        type=["jpg", "jpeg", "png", "tif", "tiff"],
+        key="image_uploader"
+    )
 
-if __name__ == "__main__":
-    main()
+    if uploaded is not None:
+        try:
+            image = Image.open(uploaded).convert("RGB")
+            st.session_state.uploaded_image = image
+            st.session_state.uploaded_name = uploaded.name
+
+            st.markdown("---")
+            section_title("پیش‌نمایش تصویر")
+
+            img_col, info_col = st.columns([1.4, 1], gap="large")
+
+            with img_col:
+                st.image(
+                    image,
+                    caption=uploaded.name,
+                    use_container_width=True
+                )
+
+            with info_col:
+                glass_card(
+                    "اطلاعات فایل",
+                    f"""
+                    نام فایل: {uploaded.name}<br>
+                    ابعاد: {image.width} × {image.height}<br>
+                    فرمت: {image.format or 'نامشخص'}<br>
+                    حالت رنگ: {image.mode}
+                    """,
+                    "📋"
+                )
+
+                st.markdown(
+                    """
+                    <div class="glass-card">
+                        <span class="status-pill">نسخه بدون مدل تشخیص</span>
+                        <div style="font-weight:750;color:#FFF;margin-top:12px;">
+                            آماده‌سازی تصویر
+                        </div>
+                        <div class="muted">
+                            در حال حاضر مدل یادگیری عمیق به رابط متصل نیست.
+                            کلیک روی دکمه بررسی، تشخیص واقعی انجام نمی‌دهد.
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+            if st.button(
+                "🔍  بررسی تصویر",
+                key="analyze_uploaded",
+                use_container_width=True
+            ):
+                st.warning(
+                    "مدل تشخیص هنوز به GolbinoAI متصل نشده است. "
+                    "تصویر دریافت و نمایش داده شده، اما هیچ تشخیص یا شمارش واقعی انجام نشده است."
+                )
+
+        except Exception as e:
+            st.error(f"خطا در خواندن تصویر: {e}")
+
+    else:
+        st.markdown(
+            """
+            <div class="glass-card" style="text-align:center;padding:45px 20px;">
+                <div style="font-size:3rem;margin-bottom:12px;">🖼️</div>
+                <div style="font-size:1.2rem;font-weight:750;color:#FFF;">
+                    هنوز تصویری انتخاب نشده است
+                </div>
+                <div class="muted">
+                    تصویر میکروسکوپی خود را از قسمت بالا بارگذاری کنید.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    render_footer()
+
+
+# =========================================================
+# 10. صفحه نمونه‌های نمایشی
+# =========================================================
+
+elif st.session_state.page == "نمونه‌های نمایشی":
+
+    render_header(
+        "نمونه‌های نمایشی",
+        "تصاویر و نتایج زیر صرفاً برای نمایش طراحی رابط کاربری تولید شده‌اند."
+    )
+
+    st.warning(
+        "تصاویر این صفحه مصنوعی و غیرواقعی هستند. اعداد و نتایج نمونه نیز "
+        "خروجی مدل هوش مصنوعی نیستند و نباید به‌عنوان داده آزمایشگاهی استفاده شوند."
+    )
+
+    samples = get_demo_samples()
+
+    demo_results = {
+        "Neutrophil": 42,
+        "Lymphocyte": 28,
+        "Monocyte": 12,
+        "Eosinophil": 10,
+        "Basophil": 8,
+    }
+
+    for index, sample in enumerate(samples):
+        st.markdown(f"### {sample['name']}")
+
+        image_col, result_col = st.columns([1.2, 1], gap="large")
+
+        with image_col:
+            st.image(
+                sample["image"],
+                use_container_width=True,
+                caption="تصویرسازی مصنوعی — فاقد داده میکروسکوپی واقعی"
+            )
+
+        with result_col:
+            st.markdown(
+                """
+                <div class="glass-card">
+                    <span class="status-pill">نتیجه کاملاً نمایشی</span>
+                    <h3 style="margin-top:12px;">خلاصه نمونه</h3>
+                    <div class="muted">
+                        مقادیر زیر فقط برای نمایش نحوه ارائه نتایج در رابط کاربری هستند.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            for cell, count in demo_results.items():
+                color = CELL_COLORS[cell]
+                st.markdown(
+                    f"""
+                    <div style="
+                        display:flex;
+                        justify-content:space-between;
+                        align-items:center;
+                        padding:9px 13px;
+                        margin:6px 0;
+                        background:rgba(255,255,255,.055);
+                        border:1px solid rgba(255,255,255,.09);
+                        border-radius:12px;
+                    ">
+                        <span style="color:{color};font-weight:700;">
+                            {CELL_NAMES[cell]}
+                        </span>
+                        <span style="color:#FFF;direction:ltr;font-weight:700;">
+                            {count}
+                        </span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+        st.markdown("---")
+
+    render_footer()
+
+
+# =========================================================
+# 11. صفحه گزارش‌ها
+# =========================================================
+
+elif st.session_state.page == "گزارش‌ها":
+
+    render_header(
+        "گزارش‌ها",
+        "مشاهده گزارش‌های نمایشی و دریافت خروجی PDF."
+    )
+
+    st.warning(
+        "این بخش در نسخه فعلی شامل گزارش‌های نمونه است. "
+        "هیچ‌کدام از اعداد زیر از تحلیل واقعی تصویر به دست نیامده‌اند."
+    )
+
+    report_data = []
+
+    for cell, count in {
+        "Neutrophil": 42,
+        "Lymphocyte": 28,
+        "Monocyte": 12,
+        "Eosinophil": 10,
+        "Basophil": 8,
+    }.items():
+        report_data.append({
+            "نام انگلیسی": cell,
+            "نام فارسی": CELL_NAMES[cell],
+            "تعداد نمایشی": count,
+            "درصد نمایشی": count
+        })
+
+    df = pd.DataFrame(report_data)
+
+    a, b, c = st.columns(3)
+
+    with a:
+        metric_card("100", "تعداد کل نمایشی")
+
+    with b:
+        metric_card("5", "گروه سلولی")
+
+    with c:
+        metric_card("DEMO", "نوع گزارش")
+
+    section_title("جدول خلاصه")
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.markdown("---")
+
+    report = {
+        "filename": st.session_state.uploaded_name or "Demo_Sample",
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "results": [
+            {
+                "name_fa": CELL_NAMES[cell],
+                "count": count,
+                "percentage": count
+            }
+            for cell, count in {
+                "Neutrophil": 42,
+                "Lymphocyte": 28,
+                "Monocyte": 12,
+                "Eosinophil": 10,
+                "Basophil": 8,
+            }.items()
+        ]
+    }
+
+    if st.button("ساخت گزارش PDF", use_container_width=True):
+        try:
+            pdf_bytes = create_pdf_report(report)
+
+            st.download_button(
+                "⬇️ دریافت گزارش PDF",
+                data=pdf_bytes,
+                file_name="GolbinoAI_Demo_Report.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+
+        except Exception as e:
+            st.error(str(e))
+
+    render_footer()
+
+
+# =========================================================
+# 12. راهنمای سلول‌ها
+# =========================================================
+
+elif st.session_state.page == "راهنمای سلول‌ها":
+
+    render_header(
+        "راهنمای سلول‌ها",
+        "آشنایی مقدماتی با پنج گروه اصلی گلبول سفید مورد مطالعه در پروژه."
+    )
+
+    for cell, name in CELL_NAMES.items():
+        color = CELL_COLORS[cell]
+
+        st.markdown(
+            f"""
+            <div class="glass-card">
+                <div style="display:flex;align-items:center;gap:12px;">
+                    <div style="
+                        width:13px;height:13px;border-radius:50%;
+                        background:{color};
+                        box-shadow:0 0 16px {color};
+                    "></div>
+                    <div style="font-size:1.18rem;font-weight:800;color:#FFF;">
+                        {name}
+                    </div>
+                    <div style="
+                        direction:ltr;
+                        color:#AFA8C0;
+                        font-size:.85rem;
+                        margin-right:auto;
+                    ">
+                        {cell}
+                    </div>
+                </div>
+                <div class="muted" style="margin-top:12px;">
+                    {CELL_DESCRIPTIONS[cell]}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    render_footer()
+
+
+# =========================================================
+# 13. درباره پروژه
+# =========================================================
+
+elif st.session_state.page == "درباره پروژه":
+
+    render_header(
+        "درباره GolbinoAI",
+        "یک پروژه پژوهشی در مسیر توسعه ابزارهای هوشمند خون‌شناسی."
+    )
+
+    st.markdown(
+        """
+        <div class="glass-card">
+            <div style="font-size:1.45rem;font-weight:800;color:#FFF;">
+                GolbinoAI
+            </div>
+            <div class="muted" style="margin-top:12px;">
+                GolbinoAI با هدف توسعه یک بستر پژوهشی برای تحلیل تصاویر
+                میکروسکوپی خون محیطی طراحی شده است. تمرکز پروژه بر شناسایی
+                و مکان‌یابی پنج گروه اصلی گلبول سفید در تصاویر اسمیر خون است.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    section_title("اهداف پژوهشی")
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        glass_card(
+            "تشخیص و مکان‌یابی",
+            "توسعه مدل‌های بینایی ماشین برای شناسایی و مکان‌یابی سلول‌های سفید خون.",
+            "🎯"
+        )
+
+    with c2:
+        glass_card(
+            "ارزیابی مدل",
+            "بررسی عملکرد مدل با معیارهایی مانند Precision، Recall و mAP.",
+            "📊"
+        )
+
+    section_title("گروه‌های مورد بررسی")
+
+    for cell, name in CELL_NAMES.items():
+        st.markdown(
+            f"""
+            <div style="
+                display:flex;
+                justify-content:space-between;
+                padding:12px 16px;
+                margin:7px 0;
+                border-radius:13px;
+                background:rgba(255,255,255,.055);
+                border:1px solid rgba(255,255,255,.09);
+            ">
+                <span style="color:#F5F1FF;font-weight:650;">{name}</span>
+                <span style="direction:ltr;color:#BEB6D0;">{cell}</span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    st.markdown("---")
+
+    st.markdown(
+        """
+        <div class="muted">
+            <b style="color:#F3EDFF;">وضعیت توسعه:</b>
+            نسخه فعلی شامل رابط کاربری و محتوای نمایشی است.
+            مدل تشخیص هنوز به برنامه متصل نشده است.
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    render_footer()
