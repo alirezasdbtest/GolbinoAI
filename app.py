@@ -1,30 +1,31 @@
-# app.py — Golbino AI · Liquid Glass UI (Light Theme)
-# فقط Streamlit + Pillow. آماده دیپلوی روی Streamlit Cloud.
+# app.py — Golbino AI · تشخیص گلبول سفید (UI + دمو)
+# وابستگی‌ها: streamlit, pillow  (فقط همین دو)
+
+import hashlib
+import random
+from io import BytesIO
 
 import streamlit as st
-from PIL import Image
-from pathlib import Path
+from PIL import Image, ImageDraw
 
 # ============================================================
 # 0) تنظیمات صفحه
 # ============================================================
 st.set_page_config(
-    page_title="گلبینو AI",
-    page_icon="🫧",
+    page_title="گلبینو AI · تشخیص گلبول سفید",
+    page_icon="🩸",
     layout="centered",
-    initial_sidebar_state="expanded",
 )
 
 # ============================================================
-# 1) Liquid Glass — SVG filter (برای شکست نور واقعی)
+# 1) Liquid Glass — SVG filter
 # ============================================================
 _SVG = """
 <svg xmlns="http://www.w3.org/2000/svg"
      style="position:absolute;width:0;height:0;overflow:hidden;pointer-events:none"
      aria-hidden="true">
   <defs>
-    <filter id="lg-dist" x="-10%" y="-10%" width="120%" height="120%"
-            color-interpolation-filters="sRGB">
+    <filter id="lg-dist" x="-10%" y="-10%" width="120%" height="120%">
       <feTurbulence type="fractalNoise" baseFrequency="0.008 0.008"
                     numOctaves="2" seed="92" result="noise"/>
       <feGaussianBlur in="noise" stdDeviation="2" result="blurred"/>
@@ -42,24 +43,17 @@ _SVG = """
 """
 
 # ============================================================
-# 2) CSS — شیشه روشن، نرم و سبک
+# 2) CSS — شیشه روشن
 # ============================================================
 _CSS = """
 :root{
-  --lg-blur:14px;
-  --lg-sat:170%;
-  --lg-bg:rgba(255,255,255,.30);
-  --lg-bg-strong:rgba(255,255,255,.50);
+  --lg-blur:14px; --lg-sat:170%;
+  --lg-bg:rgba(255,255,255,.32);
   --lg-border:rgba(255,255,255,.78);
-  --lg-radius:26px;
-  --lg-shadow:
-    0 10px 34px rgba(31,25,66,.08),
-    inset 0 4px 18px rgba(255,255,255,.55),
-    inset 0 -2px 8px rgba(128,101,184,.05);
-  --accent:#8065B8;
+  --lg-radius:24px;
+  --lg-shadow:0 10px 34px rgba(31,25,66,.08),
+              inset 0 4px 18px rgba(255,255,255,.55);
 }
-
-/* پس‌زمینه گرادیانی خیلی نرم روشن */
 [data-testid="stAppViewContainer"]{
   background:
     radial-gradient(1100px 750px at 8% -12%,  #EFE9FA 0%, transparent 62%),
@@ -69,170 +63,68 @@ _CSS = """
   background-attachment:fixed;
 }
 [data-testid="stHeader"]{background:transparent;}
-
-/* فونت و اندازه‌ها */
-html, body, [class*="css"]{
-  font-family: -apple-system, "SF Pro Text", "Segoe UI",
-               "Vazirmatn", Tahoma, sans-serif;
+html,body,[class*="css"]{
+  font-family:-apple-system,"SF Pro Text","Segoe UI","Vazirmatn",Tahoma,sans-serif;
   color:#29243A;
 }
-h1,h2,h3{letter-spacing:-.01em;}
 
-/* ================= شیشه پایه ================= */
-.lg-card,
-.glass-container{
+.lg-card{
   background:var(--lg-bg);
   -webkit-backdrop-filter:blur(var(--lg-blur)) saturate(var(--lg-sat));
   backdrop-filter:blur(var(--lg-blur)) saturate(var(--lg-sat));
   border:1px solid var(--lg-border);
   border-radius:var(--lg-radius);
   box-shadow:var(--lg-shadow);
-  padding:1.25rem 1.4rem;
-  position:relative;
-  overflow:hidden;
-  will-change:backdrop-filter;
+  padding:1.15rem 1.3rem;
+  position:relative;overflow:hidden;
   transition:transform .25s ease, box-shadow .25s ease;
 }
-.lg-card::before,
-.glass-container::before{
-  content:"";
-  position:absolute; top:0; left:8%; right:8%; height:1px;
-  background:linear-gradient(90deg, transparent,
-              rgba(255,255,255,.95), transparent);
-  pointer-events:none;
+.lg-card::before{
+  content:"";position:absolute;top:0;left:8%;right:8%;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.95),transparent);
 }
-.lg-card:hover,
-.glass-container:hover{
+.lg-card:hover{
   transform:translateY(-2px);
-  box-shadow:
-    0 14px 40px rgba(31,25,66,.12),
-    inset 0 4px 20px rgba(255,255,255,.65);
+  box-shadow:0 14px 40px rgba(31,25,66,.12),
+             inset 0 4px 20px rgba(255,255,255,.65);
 }
-
-/* نسخه واقعی شکست نور (Chrome/Edge) */
 .lg-refract{
   -webkit-backdrop-filter:blur(10px) saturate(180%) url(#lg-dist);
   backdrop-filter:blur(10px) saturate(180%) url(#lg-dist);
 }
 
-/* ================= سایدبار ================= */
-[data-testid="stSidebar"]{background:transparent;}
-[data-testid="stSidebar"] > div:first-child{
-  background:rgba(255,255,255,.45);
-  -webkit-backdrop-filter:blur(22px) saturate(180%);
-  backdrop-filter:blur(22px) saturate(180%);
-  border-right:1px solid rgba(255,255,255,.65);
-  box-shadow:8px 0 32px rgba(31,25,66,.05);
-}
-
-/* ================= دکمه‌ها ================= */
-.stButton > button,
-.stDownloadButton > button,
-.stFormSubmitButton > button{
-  background:rgba(255,255,255,.38) !important;
-  color:#29243A !important;
+.stButton>button{
+  background:rgba(255,255,255,.38)!important;
+  color:#29243A!important;
   -webkit-backdrop-filter:blur(10px) saturate(180%);
   backdrop-filter:blur(10px) saturate(180%);
-  border:1px solid rgba(255,255,255,.88) !important;
-  border-radius:16px !important;
-  box-shadow:
-    0 4px 16px rgba(31,25,66,.07),
-    inset 0 1px 0 rgba(255,255,255,.9);
-  font-weight:600;
-  padding:.55rem 1.1rem !important;
-  transition:transform .18s ease, background .18s ease;
+  border:1px solid rgba(255,255,255,.88)!important;
+  border-radius:16px!important;
+  box-shadow:0 4px 16px rgba(31,25,66,.07);
+  font-weight:600;padding:.55rem 1.1rem!important;
 }
-.stButton > button:hover{
-  background:rgba(255,255,255,.58) !important;
-  border-color:rgba(128,101,184,.42) !important;
-  transform:translateY(-1px);
+[data-testid="stFileUploaderDropzone"]{
+  background:rgba(255,255,255,.42)!important;
+  -webkit-backdrop-filter:blur(12px) saturate(180%);
+  backdrop-filter:blur(12px) saturate(180%);
+  border:1.5px dashed rgba(128,101,184,.4)!important;
+  border-radius:22px!important;
+  padding:1.2rem!important;
 }
-.stButton > button:active{transform:translateY(0);}
-
-/* دکمه primary */
-.stButton > button[kind="primary"],
-.stFormSubmitButton > button[kind="primary"]{
-  background:linear-gradient(135deg,
-      rgba(128,101,184,.88), rgba(107,82,163,.92)) !important;
-  color:#fff !important;
-  border:1px solid rgba(255,255,255,.35) !important;
+[data-testid="stProgress"] > div > div > div > div{
+  background:linear-gradient(90deg,#8065B8,#6B52A3)!important;
 }
-
-/* ================= ورودی‌ها ================= */
-[data-testid="stTextInput"] input,
-[data-testid="stTextArea"] textarea,
-[data-testid="stNumberInput"] input,
-[data-testid="stSelectbox"] > div > div,
-[data-testid="stMultiSelect"] > div > div{
-  background:rgba(255,255,255,.48) !important;
-  -webkit-backdrop-filter:blur(8px) saturate(160%);
-  backdrop-filter:blur(8px) saturate(160%);
-  border:1px solid rgba(255,255,255,.82) !important;
-  border-radius:14px !important;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.9);
-  color:#29243A !important;
-}
-[data-testid="stTextInput"] input:focus,
-[data-testid="stTextArea"] textarea:focus{
-  border-color:rgba(128,101,184,.6) !important;
-  box-shadow:
-    0 0 0 3px rgba(128,101,184,.15),
-    inset 0 1px 0 rgba(255,255,255,.9) !important;
-}
-
-/* ================= چت ================= */
-[data-testid="stChatMessage"]{
-  background:rgba(255,255,255,.34);
-  -webkit-backdrop-filter:blur(12px) saturate(170%);
-  backdrop-filter:blur(12px) saturate(170%);
-  border:1px solid rgba(255,255,255,.72);
-  border-radius:22px;
-  padding:.9rem 1.05rem;
-  margin-bottom:.55rem;
-  box-shadow:0 4px 18px rgba(31,25,66,.05);
-}
-[data-testid="stChatInput"] textarea{
-  background:rgba(255,255,255,.55) !important;
-  -webkit-backdrop-filter:blur(10px) saturate(170%);
-  backdrop-filter:blur(10px) saturate(170%);
-  border:1px solid rgba(255,255,255,.85) !important;
-  border-radius:18px !important;
-}
-
-/* ================= جداکننده ================= */
 .lg-divider{
-  height:1px; margin:1rem 0;
-  background:linear-gradient(90deg, transparent,
-              rgba(128,101,184,.25), transparent);
-}
-
-/* ================= اسکرول‌بار ================= */
-::-webkit-scrollbar{width:8px;height:8px;}
-::-webkit-scrollbar-track{background:transparent;}
-::-webkit-scrollbar-thumb{
-  background:rgba(128,101,184,.25);border-radius:8px;
-}
-::-webkit-scrollbar-thumb:hover{background:rgba(128,101,184,.45);}
-
-/* ================= Fallback ================= */
-@supports not (backdrop-filter: url(#lg-dist)){
-  .lg-card, .glass-container, [data-testid="stChatMessage"]{
-    background:rgba(255,255,255,.78);
-  }
+  height:1px;margin:1.2rem 0;
+  background:linear-gradient(90deg,transparent,rgba(128,101,184,.25),transparent);
 }
 @media (prefers-reduced-motion: reduce){
-  .lg-card, .glass-container, .stButton > button,
-  [data-testid="stChatMessage"]{
-    -webkit-backdrop-filter:none !important;
-    backdrop-filter:none !important;
-    background:rgba(255,255,255,.88) !important;
-    transition:none !important;
-  }
-  .lg-card:hover, .glass-container:hover{transform:none !important;}
+  .lg-card{transition:none!important;}
+  .lg-card:hover{transform:none!important;}
 }
-@media (max-width: 640px){
+@media (max-width:640px){
   :root{--lg-blur:9px;}
-  .lg-card, .glass-container{padding:.9rem 1rem; border-radius:20px;}
+  .lg-card{padding:.9rem 1rem;border-radius:20px;}
   .lg-refract{
     -webkit-backdrop-filter:blur(8px) url(#lg-dist-light);
     backdrop-filter:blur(8px) url(#lg-dist-light);
@@ -240,165 +132,258 @@ h1,h2,h3{letter-spacing:-.01em;}
 }
 """
 
-# تزریق SVG و CSS
 st.markdown(_SVG, unsafe_allow_html=True)
 st.markdown(f"<style>{_CSS}</style>", unsafe_allow_html=True)
 
 # ============================================================
-# 3) بارگذاری منابع
+# 3) کلاس‌های WBC
+# ============================================================
+CLASSES = [
+    ("نوتروفیل",   "Neutrophil", "#4A90E2"),
+    ("لنفوسیت",    "Lymphocyte", "#7B68EE"),
+    ("مونوسیت",    "Monocyte",   "#50C878"),
+    ("ائوزینوفیل", "Eosinophil", "#FF8C42"),
+    ("بازوفیل",    "Basophil",   "#D946EF"),
+]
+
+# ============================================================
+# 4) نمونه ساختگی خون + تشخیص نمایشی (کش‌شده)
 # ============================================================
 @st.cache_data(show_spinner=False)
-def load_logo():
-    for p in ("assets/golbino_mascot.webp",
-              "assets/golbino_mascot.png",
-              "golbino_mascot.png",
-              "golbino_mascot.webp"):
-        if Path(p).exists():
-            return Image.open(p)
-    return None
+def build_sample():
+    """
+    یک اسمیر خون ساختگی می‌سازد و نسخه‌ی annotate‌شده را هم برمی‌گرداند.
+    هیچ مدلی درگیر نیست — فقط برای نمایش ظاهر خروجی است.
+    """
+    rng = random.Random(42)
+    size = 480
+    base = Image.new("RGB", (size, size), (252, 246, 240))
+    d = ImageDraw.Draw(base)
+
+    # RBCs (پس‌زمینه)
+    for _ in range(220):
+        cx = rng.randint(-10, size + 10)
+        cy = rng.randint(-10, size + 10)
+        r = rng.randint(7, 12)
+        col = rng.choice([(232, 178, 178), (228, 172, 172), (238, 186, 186)])
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=col)
+        r2 = r // 2
+        d.ellipse([cx - r2, cy - r2, cx + r2, cy + r2], fill=(242, 196, 196))
+
+    # WBCs — (cx, cy, r, class_index)
+    wbcs = [
+        (120, 140, 24, 0),   # Neutrophil
+        (330, 110, 26, 1),   # Lymphocyte
+        (400, 300, 22, 0),   # Neutrophil
+        (200, 380, 30, 2),   # Monocyte
+        (95,  300, 23, 0),   # Neutrophil
+        (280, 240, 25, 1),   # Lymphocyte
+    ]
+    cyto_colors = [(248, 228, 240), (250, 232, 242), (245, 225, 238)]
+    nuc_colors  = [(130, 90, 170), (110, 70, 160), (150, 100, 180)]
+    for (cx, cy, r, cls) in wbcs:
+        d.ellipse([cx - r, cy - r, cx + r, cy + r],
+                  fill=cyto_colors[cls % 3],
+                  outline=(200, 160, 200), width=1)
+        nr = r - 6
+        d.ellipse([cx - nr, cy - nr, cx + nr, cy + nr],
+                  fill=nuc_colors[cls % 3])
+
+    # annotate
+    ann_img = base.copy()
+    ann = ImageDraw.Draw(ann_img)
+    for (cx, cy, r, cls) in wbcs:
+        color = CLASSES[cls][2]
+        br = r + 8
+        ann.rectangle([cx - br, cy - br, cx + br, cy + br],
+                      outline=color, width=3)
+
+    return base, ann_img, wbcs
 
 
-logo = load_logo()
+def summarize_wbcs(wbcs):
+    counts = {}
+    for (_, _, _, cls) in wbcs:
+        counts[cls] = counts.get(cls, 0) + 1
+    return counts
+
 
 # ============================================================
-# 4) سایدبار
+# 5) پیش‌بینی ساختگی برای تصویر آپلودی
+#    (بعداً با onnxruntime جایگزین می‌شود)
 # ============================================================
-with st.sidebar:
-    if logo:
-        col_a, col_b = st.columns([1, 2], vertical_alignment="center")
-        with col_a:
-            st.image(logo, width=64)
-        with col_b:
-            st.markdown("### 🫧 گلبینو")
-    else:
-        st.markdown("## 🫧 گلبینو AI")
+def mock_predict(image_bytes: bytes):
+    h = hashlib.sha256(image_bytes).digest()
+    rng = random.Random(int.from_bytes(h[:8], "big"))
+    raw = [rng.random() ** 2 for _ in CLASSES]
+    s = sum(raw)
+    probs = [r / s for r in raw]
+    top = max(range(len(probs)), key=lambda i: probs[i])
+    return probs, top
 
-    st.caption("دستیار هوشمند شما")
-    st.markdown('<div class="lg-divider"></div>', unsafe_allow_html=True)
-
-    st.markdown("**تنظیمات**")
-    language = st.selectbox("زبان", ["فارسی", "English"], index=0)
-    theme_mode = st.radio(
-        "حالت نمایش",
-        ["شیشه روشن (Liquid Glass)", "شیشه واقعی (Chrome)"],
-        index=0,
-    )
-    st.toggle("افکت شکست نور", value=True,
-              help="فقط در Chrome/Edge پشتیبانی می‌شود")
-
-    st.markdown('<div class="lg-divider"></div>', unsafe_allow_html=True)
-
-    if st.button("🗑️ پاک کردن گفتگو", use_container_width=True):
-        st.session_state.messages = []
-        st.rerun()
-
-    st.markdown('<div class="lg-divider"></div>', unsafe_allow_html=True)
-    st.caption("نسخه ۱.۰ • دموی UI")
 
 # ============================================================
-# 5) هدر
+# 6) هدر
 # ============================================================
 st.markdown(
     """
     <div class="lg-card lg-refract"
-         style="text-align:center;margin-bottom:1.1rem;">
-      <div style="font-size:2rem;line-height:1;">🫧</div>
-      <h1 style="margin:.4rem 0 0;font-size:1.55rem;color:#29243A;">
+         style="text-align:center;margin-bottom:1rem;">
+      <div style="font-size:2rem;line-height:1;">🩸</div>
+      <h1 style="margin:.4rem 0 0;font-size:1.5rem;color:#29243A;">
         گلبینو AI
       </h1>
-      <p style="margin:.35rem 0 0;color:#5C5470;font-size:.92rem;">
-        دستیار هوشمند، سبک و شیشه‌ای ✨
+      <p style="margin:.35rem 0 0;color:#5C5470;font-size:.9rem;">
+        تشخیص خودکار انواع گلبول سفید از تصویر میکروسکوپی خون
       </p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# ============================================================
-# 6) چت
-# ============================================================
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "assistant",
-         "content": "سلام! من گلبینو هستم. چطور می‌تونم کمکتون کنم؟ 🫧"}
-    ]
-
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-
-prompt = st.chat_input("پیام خود را بنویسید…")
-
-if prompt:
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    # پاسخ نمونه (بعداً مدل واقعی جایگزین می‌شود)
-    reply = f"پیام شما دریافت شد: «{prompt}» — این یک پاسخ نمونه است."
-    st.session_state.messages.append(
-        {"role": "assistant", "content": reply}
-    )
-    with st.chat_message("assistant"):
-        st.markdown(reply)
-
-# ============================================================
-# 7) کارت پایانی
-# ============================================================
-st.markdown('<div class="lg-divider"></div>', unsafe_allow_html=True)
-
-c1, c2, c3 = st.columns(3, gap="small")
-with c1:
-    st.markdown(
-        """
-        <div class="lg-card" style="text-align:center;">
-          <div style="font-size:1.4rem;">⚡</div>
-          <div style="font-weight:600;color:#29243A;margin-top:.3rem;">
-            سریع
-          </div>
-          <div style="font-size:.8rem;color:#5C5470;margin-top:.2rem;">
-            پاسخ فوری
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-with c2:
-    st.markdown(
-        """
-        <div class="lg-card" style="text-align:center;">
-          <div style="font-size:1.4rem;">🔒</div>
-          <div style="font-weight:600;color:#29243A;margin-top:.3rem;">
-            امن
-          </div>
-          <div style="font-size:.8rem;color:#5C5470;margin-top:.2rem;">
-            بدون ذخیره‌سازی
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-with c3:
-    st.markdown(
-        """
-        <div class="lg-card" style="text-align:center;">
-          <div style="font-size:1.4rem;">✨</div>
-          <div style="font-weight:600;color:#29243A;margin-top:.3rem;">
-            سبک
-          </div>
-          <div style="font-size:.8rem;color:#5C5470;margin-top:.2rem;">
-            شیشه مایع
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
 st.markdown(
     """
-    <div style="text-align:center;margin-top:1.4rem;color:#8A84A0;
+    <div class="lg-card"
+         style="border-left:4px solid #E0A800;
+                background:rgba(255,248,225,.6);margin-bottom:1rem;">
+      <strong>⚠️ هشدار:</strong> این یک دموی آموزشی است و
+      <strong>جایگزین نظر پزشک یا آزمایشگاه نیست</strong>.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ============================================================
+# 7) بخش نمونه نمایشی
+# ============================================================
+st.markdown(
+    '<div class="lg-card" style="padding:.9rem 1.1rem;'
+    'font-weight:700;color:#29243A;margin-bottom:.7rem;">'
+    '🔬 نمونه نمایشی'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+sample_base, sample_ann, sample_wbcs = build_sample()
+counts = summarize_wbcs(sample_wbcs)
+
+col_a, col_b = st.columns(2, gap="small")
+with col_a:
+    st.image(sample_base, caption="تصویر خام میکروسکوپ",
+             use_container_width=True)
+with col_b:
+    st.image(sample_ann, caption="گلبول‌های سفید شناسایی‌شده",
+             use_container_width=True)
+
+# افسانه رنگ‌ها + آمار
+legend_html = "".join(
+    f'<span style="display:inline-flex;align-items:center;'
+    f'gap:.35rem;margin:.15rem .55rem .15rem 0;font-size:.82rem;color:#29243A;">'
+    f'<span style="width:10px;height:10px;border-radius:3px;'
+    f'background:{color};display:inline-block;"></span>{fa}</span>'
+    for (fa, en, color) in CLASSES
+)
+stats_html = " • ".join(
+    f'{CLASSES[ci][0]}: <strong>{n}</strong>'
+    for ci, n in sorted(counts.items())
+)
+st.markdown(
+    f"""
+    <div class="lg-card" style="padding:.9rem 1.1rem;margin-top:.5rem;">
+      <div style="font-size:.85rem;color:#5C5470;margin-bottom:.35rem;">
+        راهنمای رنگ‌ها
+      </div>
+      <div>{legend_html}</div>
+      <div style="margin-top:.7rem;font-size:.88rem;color:#29243A;">
+        🧫 <strong>{len(sample_wbcs)}</strong> گلبول سفید شناسایی شد —
+        {stats_html}
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown('<div class="lg-divider"></div>', unsafe_allow_html=True)
+
+# ============================================================
+# 8) آپلود تصویر کاربر
+# ============================================================
+st.markdown(
+    '<div class="lg-card" style="padding:.9rem 1.1rem;'
+    'font-weight:700;color:#29243A;margin-bottom:.7rem;">'
+    '📤 تصویر خودت را آپلود کن'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+uploaded = st.file_uploader(
+    "تصویر میکروسکوپی خون (PNG / JPG)",
+    type=["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"],
+    label_visibility="collapsed",
+)
+
+if uploaded is not None:
+    raw_bytes = uploaded.getvalue()
+    img = Image.open(BytesIO(raw_bytes))
+    probs, top = mock_predict(raw_bytes)
+    top_fa, top_en, top_color = CLASSES[top]
+    conf = probs[top] * 100
+
+    col1, col2 = st.columns([1, 1.2], gap="small")
+    with col1:
+        st.image(img, caption="تصویر آپلودشده",
+                 use_container_width=True)
+    with col2:
+        st.markdown(
+            f"""
+            <div class="lg-card" style="padding:1rem 1.2rem;">
+              <div style="font-size:.8rem;color:#5C5470;">نتیجه تشخیص</div>
+              <div style="font-size:1.4rem;font-weight:700;
+                          color:#29243A;margin-top:.25rem;">
+                <span style="display:inline-block;width:12px;height:12px;
+                             border-radius:4px;background:{top_color};
+                             margin-left:.4rem;"></span>
+                {top_fa}
+              </div>
+              <div style="font-size:.82rem;color:#8065B8;margin-top:.1rem;">
+                {top_en}
+              </div>
+              <div style="font-size:.9rem;color:#5C5470;margin-top:.55rem;">
+                اطمینان مدل: <strong>{conf:.1f}٪</strong>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        '<div class="lg-card" style="padding:.9rem 1.1rem;margin-top:.6rem;">'
+        '<div style="font-size:.85rem;color:#5C5470;margin-bottom:.55rem;">'
+        'توزیع احتمال کلاس‌ها</div>',
+        unsafe_allow_html=True,
+    )
+    order = sorted(range(len(CLASSES)), key=lambda i: probs[i], reverse=True)
+    for i in order:
+        fa, en, _ = CLASSES[i]
+        st.progress(probs[i], text=f"{fa} — {probs[i]*100:.1f}٪")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.caption(
+        "ℹ️ این نتیجه هنوز توسط مدل واقعی تولید نشده؛ "
+        "بعد از آموزش مدل با دیتاست BloodMNIST، این بخش جایگزین می‌شود."
+    )
+
+else:
+    st.info("👆 یک تصویر میکروسکوپی آپلود کن تا نتیجه نمایش داده شود.")
+
+# ============================================================
+# 9) فوتر
+# ============================================================
+st.markdown(
+    """
+    <div style="text-align:center;margin-top:1.6rem;color:#8A84A0;
                 font-size:.78rem;">
-      گلبینو AI — دموی رابط کاربری
+      گلبینو AI — دموی رابط کاربری • نسخه ۱.۰
     </div>
     """,
     unsafe_allow_html=True,
