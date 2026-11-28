@@ -1,0 +1,255 @@
+/* =========================================================
+   Liquid Glass — Light Theme (iOS 26 style)
+   طراحی‌شده برای Streamlit با تم روشن
+   ========================================================= */
+
+/* ---------- متغیرهای پایه ---------- */
+:root {
+  --lg-blur: 12px;
+  --lg-saturate: 180%;
+  --lg-bg: rgba(255, 255, 255, 0.28);
+  --lg-bg-strong: rgba(255, 255, 255, 0.45);
+  --lg-border: rgba(255, 255, 255, 0.75);
+  --lg-shadow: 0 8px 32px rgba(31, 25, 66, 0.08),
+               inset 0 4px 20px rgba(255, 255, 255, 0.55),
+               inset 0 -2px 8px rgba(128, 101, 184, 0.06);
+  --lg-radius: 24px;
+  --lg-accent: #8065B8;
+}
+
+/* ---------- پس‌زمینه گرادیانی نرم برای دیده شدن شیشه ---------- */
+[data-testid="stAppViewContainer"] {
+  background:
+    radial-gradient(1200px 800px at 10% -10%, #E9E3F7 0%, transparent 60%),
+    radial-gradient(1000px 700px at 110% 20%, #E3F0F7 0%, transparent 55%),
+    radial-gradient(900px 600px at 50% 120%, #F7E9F2 0%, transparent 60%),
+    #F8F9FC;
+  background-attachment: fixed;
+}
+
+/* ---------- حذف هدر Streamlit (اختیاری) ---------- */
+[data-testid="stHeader"] {
+  background: transparent;
+  backdrop-filter: none;
+}
+[data-testid="stToolbar"] { right: 0.5rem; }
+
+/* =========================================================
+   کلاس پایه شیشه
+   ========================================================= */
+.lg-card,
+.glass-container {
+  background: var(--lg-bg);
+  -webkit-backdrop-filter: blur(var(--lg-blur)) saturate(var(--lg-saturate));
+  backdrop-filter: blur(var(--lg-blur)) saturate(var(--lg-saturate));
+  border: 1px solid var(--lg-border);
+  border-radius: var(--lg-radius);
+  box-shadow: var(--lg-shadow);
+  padding: 1.25rem 1.5rem;
+  position: relative;
+  overflow: hidden;
+  will-change: backdrop-filter;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+/* هایلایت بالای کارت (بازتاب نور) */
+.lg-card::before,
+.glass-container::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 8%; right: 8%;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent,
+    rgba(255, 255, 255, 0.95),
+    transparent);
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.lg-card:hover,
+.glass-container:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 12px 40px rgba(31, 25, 66, 0.12),
+    inset 0 4px 20px rgba(255, 255, 255, 0.65),
+    inset 0 -2px 8px rgba(128, 101, 184, 0.08);
+}
+
+/* نسخه متراکم شیشه */
+.glass-container.lg-compact { padding: 0.75rem 1rem; border-radius: 18px; }
+
+/* =========================================================
+   سایدبار شیشه‌ای
+   ========================================================= */
+[data-testid="stSidebar"] {
+  background: transparent;
+}
+[data-testid="stSidebar"] > div:first-child {
+  background: rgba(255, 255, 255, 0.42);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  border-right: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 8px 0 32px rgba(31, 25, 66, 0.05);
+}
+
+/* =========================================================
+   دکمه‌ها
+   ========================================================= */
+.stButton > button,
+.stDownloadButton > button,
+.stFormSubmitButton > button {
+  background: rgba(255, 255, 255, 0.35) !important;
+  color: #29243A !important;
+  -webkit-backdrop-filter: blur(10px) saturate(180%);
+  backdrop-filter: blur(10px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.85) !important;
+  border-radius: 16px !important;
+  box-shadow:
+    0 4px 16px rgba(31, 25, 66, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  font-weight: 600;
+  padding: 0.55rem 1.1rem !important;
+  transition: all 0.2s ease;
+}
+
+.stButton > button:hover,
+.stDownloadButton > button:hover,
+.stFormSubmitButton > button:hover {
+  background: rgba(255, 255, 255, 0.55) !important;
+  border-color: rgba(128, 101, 184, 0.45) !important;
+  transform: translateY(-1px);
+}
+
+.stButton > button:active,
+.stFormSubmitButton > button:active {
+  transform: translateY(0);
+  box-shadow: inset 0 2px 8px rgba(128, 101, 184, 0.15);
+}
+
+/* دکمه اصلی (primary) */
+.stButton > button[kind="primary"],
+.stFormSubmitButton > button[kind="primary"] {
+  background: linear-gradient(135deg,
+      rgba(128, 101, 184, 0.85),
+      rgba(107, 82, 163, 0.9)) !important;
+  color: #FFFFFF !important;
+  border: 1px solid rgba(255, 255, 255, 0.35) !important;
+}
+
+/* =========================================================
+   ورودی‌ها
+   ========================================================= */
+[data-testid="stTextInput"] input,
+[data-testid="stTextArea"] textarea,
+[data-testid="stNumberInput"] input,
+[data-testid="stSelectbox"] > div > div {
+  background: rgba(255, 255, 255, 0.45) !important;
+  -webkit-backdrop-filter: blur(8px) saturate(160%);
+  backdrop-filter: blur(8px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.8) !important;
+  border-radius: 14px !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  color: #29243A !important;
+}
+
+[data-testid="stTextInput"] input:focus,
+[data-testid="stTextArea"] textarea:focus {
+  border-color: rgba(128, 101, 184, 0.6) !important;
+  box-shadow:
+    0 0 0 3px rgba(128, 101, 184, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9) !important;
+}
+
+/* =========================================================
+   پیام‌های چت شیشه‌ای
+   ========================================================= */
+[data-testid="stChatMessage"] {
+  background: rgba(255, 255, 255, 0.32);
+  -webkit-backdrop-filter: blur(10px) saturate(170%);
+  backdrop-filter: blur(10px) saturate(170%);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 20px;
+  padding: 0.9rem 1.1rem;
+  margin-bottom: 0.6rem;
+  box-shadow: 0 4px 18px rgba(31, 25, 66, 0.05);
+}
+
+/* =========================================================
+   جداکننده شیشه‌ای
+   ========================================================= */
+.lg-divider {
+  height: 1px;
+  margin: 1rem 0;
+  background: linear-gradient(90deg,
+    transparent,
+    rgba(128, 101, 184, 0.25),
+    transparent);
+}
+
+/* =========================================================
+   اسکرول‌بار نرم
+   ========================================================= */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 101, 184, 0.25);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 101, 184, 0.45);
+}
+
+/* =========================================================
+   Fallback: مرورگرهایی که url() در backdrop-filter را
+   پشتیبانی نمی‌کنند (Safari / Firefox)
+   ========================================================= */
+@supports not (backdrop-filter: url(#lg-dist)) {
+  .lg-card,
+  .glass-container,
+  [data-testid="stChatMessage"] {
+    background: rgba(255, 255, 255, 0.75);
+  }
+}
+
+/* =========================================================
+   احترام به prefers-reduced-motion و کاربران کم‌بصیرت
+   ========================================================= */
+@media (prefers-reduced-motion: reduce) {
+  .lg-card,
+  .glass-container,
+  .stButton > button,
+  [data-testid="stChatMessage"] {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    background: rgba(255, 255, 255, 0.85) !important;
+    transition: none !important;
+  }
+  .lg-card:hover,
+  .glass-container:hover,
+  .stButton > button:hover {
+    transform: none !important;
+  }
+}
+
+/* =========================================================
+   حالت پیشرفته: اگر می‌خواهید Refraction واقعی فعال شود،
+   کلاس زیر را روی یک عنصر اضافه کنید.
+   (فقط Chromium — سافاری به‌طور خودکار به blur ساده می‌افتد)
+   ========================================================= */
+.lg-refract {
+  -webkit-backdrop-filter:
+    blur(8px) saturate(180%) url(#lg-dist);
+  backdrop-filter:
+    blur(8px) saturate(180%) url(#lg-dist);
+}
+
+/* نسخه سبک برای موبایل */
+@media (max-width: 640px) {
+  :root { --lg-blur: 8px; }
+  .lg-card, .glass-container { padding: 0.9rem 1rem; border-radius: 20px; }
+  .lg-refract {
+    -webkit-backdrop-filter: blur(8px) url(#lg-dist-light);
+    backdrop-filter: blur(8px) url(#lg-dist-light);
+  }
+}
