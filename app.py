@@ -12,8 +12,8 @@ from PIL import Image, ImageDraw
 # 0) تنظیمات صفحه
 # ============================================================
 st.set_page_config(
-    page_title="گلبینو AI · تشخیص گلبول سفید",
-    page_icon="🩸",
+    page_title="گلبینو : سیستم هوشمند تشخیص گلبول سفید",
+    #page_icon="🩸",
     layout="centered",
 )
 
@@ -241,17 +241,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.markdown(
-    """
-    <div class="lg-card"
-         style="border-left:4px solid #E0A800;
-                background:rgba(255,248,225,.6);margin-bottom:1rem;">
-      <strong>⚠️ هشدار:</strong> این یک دموی آموزشی است و
-      <strong>جایگزین نظر پزشک یا آزمایشگاه نیست</strong>.
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
 
 # ============================================================
 # 7) بخش نمونه نمایشی
